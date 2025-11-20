@@ -1,15 +1,16 @@
-// src/modules/openlines/api.js (v2.3)
-// Сохраняем старые функции (OL-сессии) + добавляем sendOL/sendTyping,
-// корректно используя makeBitrixClient из core/bitrixClient.js.
+// src/modules/openlines/api.js
+// Утилиты для работы с Открытыми линиями и сообщениями бота
 
 import { logger } from "../../core/logger.js";
 import { makeBitrixClient } from "../../core/bitrixClient.js";
 
 /**
- * === СТАРЫЕ ФУНКЦИИ ОТКРЫТЫХ ЛИНИЙ (НЕ ТРОГАЕМ) ===
- * Они работают через переданный извне api (у которого есть .call).
+ * Приветственное сообщение через стандартный метод
+ * imopenlines.bot.session.message.send
+ *
+ * Используется старым контуром (register.core.js),
+ * туда передаётся уже готовый api = makeBitrixClient(...)
  */
-
 export async function sendWelcome({ api, dialogId, text = "Здравствуйте!" }) {
   try {
     return await api.call("imopenlines.bot.session.message.send", {
@@ -22,6 +23,9 @@ export async function sendWelcome({ api, dialogId, text = "Здравствуй�
   }
 }
 
+/**
+ * Завершение диалога в ОЛ
+ */
 export async function finishDialog({ api, sessionId }) {
   try {
     return await api.call("imopenlines.bot.session.finish", {
@@ -33,6 +37,9 @@ export async function finishDialog({ api, sessionId }) {
   }
 }
 
+/**
+ * Перевод диалога на оператора
+ */
 export async function transferToOperator({ api, operatorId, sessionId }) {
   try {
     return await api.call("imopenlines.bot.session.transfer", {
@@ -46,53 +53,50 @@ export async function transferToOperator({ api, operatorId, sessionId }) {
 }
 
 /**
- * Внутренний helper: получаем Bitrix-клиент по домену портала.
+ * Отправка сообщения от бота в диалог Открытой линии
+ * Используем ИМЕННО imbot.message.add, а не im.message.add
+ * (по докам Bitrix24 для чат-ботов).
+ *
+ * См. Bitrix24 REST:
+ * - imbot.message.add — отправка сообщения от чат-бота
  */
-function getClient(portal) {
-  if (!portal) {
-    throw new Error("portal domain is required for Bitrix client");
+export async function sendOL(domain, dialogId, message) {
+  try {
+    if (!domain) throw new Error("sendOL: domain is required");
+    if (!dialogId) throw new Error("sendOL: dialogId is required");
+    if (!message) return;
+
+    const api = makeBitrixClient({ domain });
+
+    await api.call("imbot.message.add", {
+      DIALOG_ID: dialogId,
+      MESSAGE: message,
+    });
+
+    logger.info(
+      { domain, dialogId },
+      "openlines: sendOL imbot.message.add success"
+    );
+  } catch (e) {
+    logger.error(
+      { e: String(e), domain, dialogId },
+      "openlines: sendOL failed"
+    );
+    // не пробрасываем наверх, чтобы не ронять обработчик целиком
   }
-  return makeBitrixClient({ domain: portal });
 }
 
 /**
- * === НОВАЯ ФУНКЦИЯ: sendOL ===
- * Унифицированная отправка сообщений в чат Открытых линий.
- * Используется handler_llm_manager.js (v2).
+ * "Печатает..." — временно делаем no-op,
+ * чтобы не плодить лишние REST-вызовы и ошибки.
+ * Если захочешь — потом подключим реальный метод им.XXX
+ * для индикации набора текста.
  */
-export async function sendOL(portal, dialogId, text) {
+export async function sendTyping(domain, dialogId) {
   try {
-    if (!portal || !dialogId || !text) return;
-
-    logger.info("openlines", `→ OL [${portal} | ${dialogId}]: ${text}`);
-
-    const client = getClient(portal);
-
-    return await client.call("im.message.add", {
-      DIALOG_ID: dialogId,
-      MESSAGE: text,
-    });
-  } catch (err) {
-    logger.error("openlines", "Ошибка sendOL", err);
-    return null;
-  }
-}
-
-/**
- * Эффект «печатает...»
- */
-export async function sendTyping(portal, dialogId) {
-  try {
-    if (!portal || !dialogId) return;
-
-    const client = getClient(portal);
-
-    return await client.call("im.dialog.state.set", {
-      DIALOG_ID: dialogId,
-      STATE: "typing",
-    });
-  } catch (err) {
-    logger.error("openlines", "Ошибка sendTyping", err);
-    return null;
+    logger.info({ domain, dialogId }, "openlines: typing noop");
+    return;
+  } catch {
+    // игнор
   }
 }

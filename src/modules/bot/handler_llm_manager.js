@@ -1,85 +1,99 @@
-// handler_llm_manager.js (v3)
-// Полностью исправленная версия с правильной CRM-интеграцией.
+// src/modules/bot/handler_llm_manager.js
+// v4 — правильная интеграция с Bitrix (handleOnImBotMessageAdd({ body, portal, domain }))
 
 import { logger } from "../../core/logger.js";
 import { makeBitrixClient } from "../../core/bitrixClient.js";
 import { createLeadsApi } from "../crm/leads.js";
 import { searchManyOEMs } from "../external/pricing/abcp.js";
 import { prepareFunnelContext, runFunnelLLM } from "../llm/llmFunnelEngine.js";
-import { normalizeIncomingMessage } from "../../core/messageModel.js";
-import { saveSession, getSession } from "./sessionStore.js";
-import { sendOL } from "../openlines/api.js";
+import { getSession, saveSession } from "./sessionStore.js";
+import { sendOL, sendTyping } from "../openlines/api.js";
 
 const CTX = "handler_llm";
 
-export async function processIncomingBitrixMessage(req, res) {
+/**
+ * Главный вход: подменяет собой handleOnImBotMessageAdd из register.core.js
+ *
+ * ВАЖНО: вызывается ТАК:
+ *   handleOnImBotMessageAdd({ body, portal, domain })
+ * а не (req, res)
+ */
+export async function processIncomingBitrixMessage({ body, portal, domain }) {
   try {
-    const msg = normalizeIncomingMessage(req.body);
-
-    if (!msg || !msg.portal || !msg.dialogId) {
-      logger.warn(CTX, "Некорректное входящее сообщение", req.body);
-      return res.status(200).send("ok");
+    // 1) Нормализуем входящее сообщение Bitrix
+    const { msg, portalDomain } = normalizeBitrixMessage(body, portal, domain);
+    if (!msg) {
+      logger.warn(CTX, "Пустое или некорректное сообщение", body);
+      return;
     }
 
     logger.info(
       CTX,
-      `Входящее сообщение: "${msg.text}" | ${msg.portal} / ${msg.dialogId}`
+      `Входящее сообщение: "${msg.text}" | ${portalDomain} / ${msg.dialogId}`
     );
 
+    // 2) Подгружаем / создаём сессию
     const session =
-      getSession(msg.portal, msg.dialogId) || createEmptySession();
+      getSession(portalDomain, msg.dialogId) || createEmptySession();
 
-    const llmInput = await prepareFunnelContext({ session, msg });
+    // 3) Подготовка контекста для LLM
+    const llmInput = await prepareFunnelContext({
+      session,
+      msg: {
+        ...msg,
+        portal: portalDomain,
+        raw: body,
+      },
+    });
 
-    //
-    // 1) Первый проход LLM
-    //
-    const llm = await runFunnelLLM(llmInput);
-    logger.debug(CTX, "LLM structured JSON:", llm);
+    // 4) Первый проход LLM
+    const llm1 = await runFunnelLLM(llmInput);
+    logger.debug(CTX, "LLM structured JSON (pass1):", llm1);
 
-    //
-    // 2) ABCP-поиск если LLM запросил
-    //
+    let llm = { ...llm1 };
     let abcpResult = null;
 
-    if (llm.action === "abcp_lookup" && llm.oems?.length) {
+    // 5) ABCP-поиск, если LLM запросил
+    if (llm.action === "abcp_lookup" && Array.isArray(llm.oems) && llm.oems.length) {
       logger.info(CTX, "LLM запросил ABCP lookup", llm.oems);
+
+      // эффект "печатает..."
+      await sendTyping(portalDomain, msg.dialogId);
 
       abcpResult = await safeDoABCP(llm.oems);
 
-      // второй проход LLM с ABCP
+      // второй проход LLM с результатами ABCP
       llmInput.injectedABCP = abcpResult;
       const llm2 = await runFunnelLLM(llmInput);
-      Object.assign(llm, llm2);
+      logger.debug(CTX, "LLM structured JSON (pass2):", llm2);
+
+      llm = { ...llm, ...llm2 };
     }
 
-    //
-    // 3) CRM – создаём/обновляем лид
-    //
-    if (llm.update_lead_fields) {
+    // 6) Обновление лида в CRM (через createLeadsApi)
+    if (llm.update_lead_fields && Object.keys(llm.update_lead_fields).length) {
       await safeUpdateLead({
-        portal: msg.portal,
+        portal: portalDomain,
         dialogId: msg.dialogId,
         fields: llm.update_lead_fields,
         session,
       });
     }
 
-    //
-    // 4) Ответ клиенту
-    //
+    // 7) Ответ клиенту
     if (llm.reply) {
-      await sendOL(msg.portal, msg.dialogId, llm.reply);
+      await sendOL(portalDomain, msg.dialogId, llm.reply);
     }
 
-    //
-    // 5) Сохранение сессии
-    //
+    // 8) Обновляем и сохраняем сессию
     const newSession = {
       ...session,
       state: {
         stage: llm.stage || session.state.stage,
-        client_name: llm.client_name ?? session.state.client_name,
+        client_name:
+          llm.client_name !== undefined
+            ? llm.client_name
+            : session.state.client_name,
         last_reply: llm.reply,
       },
       abcp: abcpResult ?? session.abcp,
@@ -91,12 +105,52 @@ export async function processIncomingBitrixMessage(req, res) {
       updatedAt: Date.now(),
     };
 
-    saveSession(msg.portal, msg.dialogId, newSession);
-
-    return res.status(200).send("ok");
+    saveSession(portalDomain, msg.dialogId, newSession);
   } catch (err) {
-    logger.error(CTX, "Ошибка обработки сообщения", err);
-    return res.status(200).send("ok");
+    logger.error(CTX, "Message handler failed", err);
+    // Ничего не бросаем наружу — Bitrix должен получить 200 от Fastify-роута
+  }
+}
+
+/**
+ * Приводим Bitrix-событие к нормальному виду:
+ * { portal, dialogId, text }
+ */
+function normalizeBitrixMessage(body, portal, domain) {
+  try {
+    const event = body?.event?.toLowerCase?.() || "";
+    const data = body?.data || {};
+    const params = data.PARAMS || data.FIELDS || {};
+
+    const dialogId =
+      params.DIALOG_ID ||
+      params.MESSAGE?.DIALOG_ID ||
+      params.CHAT_ID && `chat${params.CHAT_ID}`;
+
+    const textRaw =
+      params.MESSAGE ||
+      params.COMMAND_PARAMS ||
+      params.TEXT ||
+      "";
+
+    const text = String(textRaw || "").trim();
+    const portalDomain = domain || portal || body?.auth?.domain || null;
+
+    if (!portalDomain || !dialogId) {
+      return { msg: null, portalDomain };
+    }
+
+    return {
+      portalDomain,
+      msg: {
+        dialogId,
+        text,
+        event,
+      },
+    };
+  } catch (e) {
+    logger.error(CTX, "Ошибка normalizeBitrixMessage", e);
+    return { msg: null, portalDomain: domain || portal || null };
   }
 }
 
@@ -113,43 +167,45 @@ function createEmptySession() {
   };
 }
 
-//
-// Новый ABCP batch lookup
-//
+/**
+ * ABCP batch lookup с логами и защитой от ошибок
+ */
 async function safeDoABCP(oems) {
   try {
-    logger.info(CTX, "ABCP batch lookup", { oems });
+    const cleanOems = [...new Set(oems.map((x) => String(x).trim()))].filter(
+      Boolean
+    );
 
-    const result = await searchManyOEMs(oems);
-    return result;
+    if (!cleanOems.length) return {};
+
+    logger.info(CTX, "ABCP batch lookup", { oems: cleanOems });
+    const result = await searchManyOEMs(cleanOems);
+    return result || {};
   } catch (err) {
     logger.error(CTX, "Ошибка ABCP", err);
     return {};
   }
 }
 
-//
-// === ПРАВИЛЬНАЯ CRM-ИНТЕГРАЦИЯ ===
-//
+/**
+ * CRM: создаём/обновляем лид через createLeadsApi + ensureLeadForDialog
+ */
 async function safeUpdateLead({ portal, dialogId, fields, session }) {
   try {
+    if (!portal || !dialogId) return;
     if (!fields || Object.keys(fields).length === 0) return;
 
-    logger.info(CTX, "CRM update request", fields);
+    logger.info(CTX, "CRM update request", { portal, dialogId, fields });
 
-    // создаём REST-клиент Bitrix
     const rest = makeBitrixClient({ domain: portal });
-
-    // создаём CRM API
     const leads = createLeadsApi(rest);
 
-    // гарантируем существование лида
+    // гарантируем наличие лида
     const leadId = await leads.ensureLeadForDialog(session, {
       dialogId,
       source: "OPENLINES",
     });
 
-    // обновляем поля
     await leads.updateLead(leadId, fields);
 
     logger.info(CTX, `CRM lead updated: ${leadId}`);

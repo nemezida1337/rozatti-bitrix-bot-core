@@ -1,0 +1,21 @@
+{
+  "state": {
+    "stage": "NEW",
+    "client_name": null,
+    "last_reply": "Здравствуйте! Чем могу помочь с автозапчастями?"
+  },
+  "abcp": null,
+  "history": [
+    {
+      "role": "user",
+      "text": "привет"
+    },
+    {
+      "role": "assistant",
+      "text": "Здравствуйте! Чем могу помочь с автозапчастями?"
+    }
+  ],
+  "updatedAt": 1763661248005,
+  "leadId": 15450,
+  "leadCreated": true
+}
