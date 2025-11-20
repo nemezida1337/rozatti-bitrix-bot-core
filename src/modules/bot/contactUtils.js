@@ -1,11 +1,12 @@
 // src/modules/bot/contactUtils.js
-// Утилиты контактов: телефон, подтверждения, карточка.
+// Минимальный модуль контактов: только телефон + служебная логика.
+// ВЕСЬ ТЕКСТ клиенту формирует LLM, не этот модуль.
 
 import { makeContactCardText } from "../../core/messageModel.js";
 
 /**
  * Нормализация телефона.
- * Берём только российский мобильный:
+ * Берём российский мобильный:
  *   (+7|7|8)?9XXXXXXXXX → +79XXXXXXXXX
  */
 export function extractPhone(text) {
@@ -15,14 +16,14 @@ export function extractPhone(text) {
   const m = cleaned.match(/(\+7|7|8)?9\d{9}/);
   if (!m) return null;
 
-  let digits = m[0].replace(/\D/g, "");
+  let digits = m[0].replace(/\D+/g, "");
+  if (!digits) return null;
 
-  if (digits.length === 11 && (digits.startsWith("79") || digits.startsWith("89"))) {
-    digits = "7" + digits.slice(-10);
-  } else if (digits.length === 10 && digits.startsWith("9")) {
-    digits = "7" + digits;
-  } else if (digits.length === 12 && digits.startsWith("7") && digits[1] === "9") {
-    digits = "7" + digits.slice(-10);
+  // 9XXXXXXXXX / 89XXXXXXXXX / 79XXXXXXXXX → +79XXXXXXXXX
+  if (digits.length === 10 && digits.startsWith("9")) {
+    // ок
+  } else if (digits.length === 11 && /^[78]/.test(digits)) {
+    digits = digits.slice(1);
   } else if (!(digits.length === 11 && digits.startsWith("79"))) {
     return null;
   }
@@ -32,17 +33,20 @@ export function extractPhone(text) {
 
 /**
  * Пересланное сообщение (обёртка из Telegram).
- * На таких сообщениях контакты не трогаем.
  */
 export function isForwardWrapper(text) {
   if (!text) return false;
   const t = String(text);
-  return /\[b\]\s*Пересланное сообщение/i.test(t) || /Пересланное сообщение/i.test(t);
+  return (
+    /\[b\]\s*Пересланное сообщение/i.test(t) ||
+    /Пересланное сообщение/i.test(t)
+  );
 }
 
 /**
  * Подтверждение типа "всё верно / ок / да".
- * Используем ТОЛЬКО на шаге подтверждения карточки контакта.
+ * ЭТО оставим на всякий случай, но в идеале
+ * подтверждение тоже будет делать LLM.
  */
 export function isConfirmAnswer(text) {
   const t = (text || "").toLowerCase();
@@ -56,6 +60,7 @@ export function isConfirmAnswer(text) {
     "не все верно",
     "неправильно",
     "не правильно",
+    "не так",
   ];
   for (const pat of negativePatterns) {
     if (norm.includes(pat)) {
@@ -63,39 +68,43 @@ export function isConfirmAnswer(text) {
     }
   }
 
-  return (
-    norm.includes("все верно") ||
-    norm.includes("всё верно") ||
-    norm === "да" ||
-    norm.startsWith("да,") ||
-    norm.includes("верно") ||
-    norm.includes("актуально") ||
-    norm.includes("правильно") ||
-    norm.includes("окей") ||
-    norm === "ок" ||
-    norm === "ок." ||
-    norm === "окей" ||
-    norm === "окей." ||
-    norm.includes("все ок") ||
-    norm.includes("всё ок") ||
-    norm.includes("все хорошо") ||
-    norm.includes("всё хорошо") ||
-    norm === "норм" ||
-    norm === "нормально" ||
-    norm.includes("норм.") ||
-    norm.includes("нормально.") ||
-    norm.includes("ага") ||
-    norm.includes("угу") ||
-    norm === "yes" ||
-    norm === "yep" ||
-    norm === "yeah" ||
-    norm === "ok"
-  );
+  const positiveExact = new Set([
+    "да",
+    "да.",
+    "да!",
+    "ок",
+    "ок.",
+    "окей",
+    "окей.",
+    "ага",
+    "угу",
+  ]);
+  if (positiveExact.has(norm)) return true;
+
+  const positiveSub = [
+    "все верно",
+    "всё верно",
+    "верно",
+    "правильно",
+    "актуально",
+    "все ок",
+    "всё ок",
+    "все хорошо",
+    "всё хорошо",
+    "подходит",
+    "устраивает",
+    "так и есть",
+  ];
+  for (const pat of positiveSub) {
+    if (norm.includes(pat)) return true;
+  }
+
+  return false;
 }
 
 /**
- * Обновить телефон в session по тексту сообщения.
- * Имя здесь НЕ трогаем — его даёт LLM через JSON.
+ * Обновление телефона из свободного текста.
+ * Имя НЕ трогаем — его даёт LLM через JSON.
  */
 export function updateSessionContactFromText(
   session,
@@ -104,9 +113,7 @@ export function updateSessionContactFromText(
 ) {
   if (!session || !text) return;
 
-  if (forwardWrapper || isConfirm) {
-    return;
-  }
+  if (forwardWrapper || isConfirm) return;
 
   const phoneFromText = extractPhone(text);
   if (phoneFromText) {
@@ -115,31 +122,27 @@ export function updateSessionContactFromText(
 }
 
 /**
- * Отправить карточку контакта.
- * Имя берём из session.name (если LLM уже его дала).
+ * Эта функция больше не шлёт карточку в чат.
+ * Можно вообще не использовать её из handler_llm_manager.
+ * Оставляю заглушкой на будущее, если понадобится
+ * отдельно показать контакт менеджеру.
  */
 export async function sendContactCard({ session, rest, dialogId }) {
-  const rawName = session.name || "";
-  const rawPhone = session.phone && session.phone !== "—" ? session.phone : null;
+  const rawName = session.name || "—";
+  const rawPhone =
+    session.phone && session.phone !== "—" ? session.phone : null;
 
   if (!rawPhone) {
-    const msg = rawName
-      ? `Спасибо, ${rawName}. Оставьте, пожалуйста, номер телефона для связи и оформления заказа.`
-      : "Оставьте, пожалуйста, номер телефона для связи и оформления заказа.";
-
-    await rest.call("imbot.message.add", {
-      DIALOG_ID: dialogId,
-      MESSAGE: msg,
-    });
+    // Сейчас НИЧЕГО не шлём: LLM сама спрашивает телефон в reply.
     return;
   }
 
   let phone = rawPhone.replace(/[^+\d]/g, "").replace(/^\+{2,}/, "+");
-  const displayName = rawName || "—";
+  const text = makeContactCardText({ name: rawName, phone });
 
-  const text = makeContactCardText({ name: displayName, phone });
-  await rest.call("imbot.message.add", {
-    DIALOG_ID: dialogId,
-    MESSAGE: text,
-  });
+  // Если когда-нибудь захочешь вручную слать карточку — раскомментируешь.
+  // await rest.call("imbot.message.add", {
+  //   DIALOG_ID: dialogId,
+  //   MESSAGE: text,
+  // });
 }

@@ -3,11 +3,11 @@
     "domain": "rozzattti.bitrix24.ru",
     "baseUrl": "https://rozzattti.bitrix24.ru/rest/",
     "memberId": "f87c4c4e3ecf61c1574c95a65c071a89",
-    "accessToken": "8b1a1e69007da370007b9a8e000024420000076f28844176dd1001a74c65402827bebc",
-    "refreshToken": "7b994569007da370007b9a8e00002442000007edaa5a6ae6577bd9148f0eda859e789c",
-    "expires": 3600,
-    "updatedAt": "2025-11-19T18:29:15.884Z",
+    "accessToken": "81c81e69007da370007b9a8e00002442000007fc0ef84eab9966aa52585e5b82e06c1b",
+    "refreshToken": "71474669007da370007b9a8e00002442000007bccba16750bc0eea3102177978c90242",
+    "expires": "1763625089",
+    "updatedAt": "2025-11-20T06:51:30.054Z",
     "applicationToken": "bb115d0a238719eb003908083f926655",
-    "expiresAt": 1763580555884
+    "expiresAt": 1763622920902
   }
 }
