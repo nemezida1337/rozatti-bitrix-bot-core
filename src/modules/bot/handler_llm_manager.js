@@ -1,196 +1,159 @@
-// src/modules/bot/handler_llm_manager.js
-// LLM-бот + ABCP + лиды. Диалог полностью ведёт LLM,
-// этот модуль только оркестрирует внешние действия (ABCP, CRM, сессия).
+// handler_llm_manager.js (v3)
+// Полностью исправленная версия с правильной CRM-интеграцией.
 
+import { logger } from "../../core/logger.js";
 import { makeBitrixClient } from "../../core/bitrixClient.js";
-import { getSession } from "./sessionStore.js";
-import {
-  searchOemForText,
-  tryHandleSelectionMessage,
-} from "../external/pricing/abcp.js";
 import { createLeadsApi } from "../crm/leads.js";
-import {
-  extractPhone,
-  isForwardWrapper,
-  isConfirmAnswer,
-  updateSessionContactFromText,
-} from "./contactUtils.js";
-import { runFunnelLLM } from "../llm/llmFunnelEngine.js";
+import { searchManyOEMs } from "../external/pricing/abcp.js";
+import { prepareFunnelContext, runFunnelLLM } from "../llm/llmFunnelEngine.js";
+import { normalizeIncomingMessage } from "../../core/messageModel.js";
+import { saveSession, getSession } from "./sessionStore.js";
+import { sendOL } from "../openlines/api.js";
 
-async function sendMessage(rest, dialogId, text) {
-  if (!text) return;
-  await rest.call("imbot.message.add", {
-    DIALOG_ID: dialogId,
-    MESSAGE: text,
-  });
+const CTX = "handler_llm";
+
+export async function processIncomingBitrixMessage(req, res) {
+  try {
+    const msg = normalizeIncomingMessage(req.body);
+
+    if (!msg || !msg.portal || !msg.dialogId) {
+      logger.warn(CTX, "Некорректное входящее сообщение", req.body);
+      return res.status(200).send("ok");
+    }
+
+    logger.info(
+      CTX,
+      `Входящее сообщение: "${msg.text}" | ${msg.portal} / ${msg.dialogId}`
+    );
+
+    const session =
+      getSession(msg.portal, msg.dialogId) || createEmptySession();
+
+    const llmInput = await prepareFunnelContext({ session, msg });
+
+    //
+    // 1) Первый проход LLM
+    //
+    const llm = await runFunnelLLM(llmInput);
+    logger.debug(CTX, "LLM structured JSON:", llm);
+
+    //
+    // 2) ABCP-поиск если LLM запросил
+    //
+    let abcpResult = null;
+
+    if (llm.action === "abcp_lookup" && llm.oems?.length) {
+      logger.info(CTX, "LLM запросил ABCP lookup", llm.oems);
+
+      abcpResult = await safeDoABCP(llm.oems);
+
+      // второй проход LLM с ABCP
+      llmInput.injectedABCP = abcpResult;
+      const llm2 = await runFunnelLLM(llmInput);
+      Object.assign(llm, llm2);
+    }
+
+    //
+    // 3) CRM – создаём/обновляем лид
+    //
+    if (llm.update_lead_fields) {
+      await safeUpdateLead({
+        portal: msg.portal,
+        dialogId: msg.dialogId,
+        fields: llm.update_lead_fields,
+        session,
+      });
+    }
+
+    //
+    // 4) Ответ клиенту
+    //
+    if (llm.reply) {
+      await sendOL(msg.portal, msg.dialogId, llm.reply);
+    }
+
+    //
+    // 5) Сохранение сессии
+    //
+    const newSession = {
+      ...session,
+      state: {
+        stage: llm.stage || session.state.stage,
+        client_name: llm.client_name ?? session.state.client_name,
+        last_reply: llm.reply,
+      },
+      abcp: abcpResult ?? session.abcp,
+      history: [
+        ...session.history,
+        { role: "user", text: msg.text },
+        { role: "assistant", text: llm.reply },
+      ],
+      updatedAt: Date.now(),
+    };
+
+    saveSession(msg.portal, msg.dialogId, newSession);
+
+    return res.status(200).send("ok");
+  } catch (err) {
+    logger.error(CTX, "Ошибка обработки сообщения", err);
+    return res.status(200).send("ok");
+  }
 }
 
-export async function handleOnImBotMessageAdd({ body, portal, domain }) {
-  const msg = body?.data?.PARAMS || {};
-  const dialogId = msg.DIALOG_ID;
-  const textRaw = msg.MESSAGE;
-  const text = String(textRaw || "").trim();
+function createEmptySession() {
+  return {
+    state: {
+      stage: "NEW",
+      client_name: null,
+      last_reply: null,
+    },
+    abcp: null,
+    history: [],
+    updatedAt: Date.now(),
+  };
+}
 
-  if (!dialogId) {
-    console.warn("[llm-bot] Missing DIALOG_ID in onImBotMessageAdd");
-    return;
-  }
-
-  const api = makeBitrixClient({
-    domain,
-    baseUrl: portal.baseUrl,
-    accessToken: portal.accessToken,
-  });
-
-  const rest = api;
-  const leadsApi = createLeadsApi(rest);
-
-  const sessionKey = dialogId;
-  const session = getSession(sessionKey);
-
-  console.log("[llm-bot] incoming:", { dialogId, text });
-
-  const confirm = isConfirmAnswer(text);
-  const forwardWrapper = isForwardWrapper(text);
-
-  // 0) Обработка выбора по цифрам (1 3 / 2x2)
-  // Здесь ABCP сам отправляет сообщение клиенту «Принято. Вы выбрали: ...»
-  // После успешной обработки выбора просто выходим, чтобы не дублировать ответ через LLM.
+//
+// Новый ABCP batch lookup
+//
+async function safeDoABCP(oems) {
   try {
-    const selectionResult = await tryHandleSelectionMessage({
-      api,
-      dialogId,
-      text,
-    });
-    if (selectionResult && selectionResult.handled) {
-      session.selectedItems = selectionResult.picks || [];
-      console.log(
-        "[llm-bot] ABCP selection handled, picks:",
-        session.selectedItems.length
-      );
+    logger.info(CTX, "ABCP batch lookup", { oems });
 
-      if (session.leadId && session.selectedItems.length) {
-        try {
-          await leadsApi.setProductRowsFromSelection(
-            session.leadId,
-            session.selectedItems
-          );
-          console.log(
-            "[llm-bot] Product rows set from selection:",
-            session.selectedItems.length
-          );
-        } catch (err) {
-          console.error(
-            "[llm-bot] Failed to set product rows from selection:",
-            err
-          );
-        }
-      }
-
-      return;
-    }
-  } catch (e) {
-    console.error("[llm-bot] ABCP selection error:", e);
+    const result = await searchManyOEMs(oems);
+    return result;
+  } catch (err) {
+    logger.error(CTX, "Ошибка ABCP", err);
+    return {};
   }
+}
 
-  // 1) Обновление телефона из текста (LLM тоже может дать PHONE в JSON — обработаем ниже)
-  updateSessionContactFromText(session, text, {
-    forwardWrapper,
-    isConfirm: confirm,
-  });
-
-  // 2) ABCP-поиск по OEM — только как источник данных для LLM
-  let abcpSearch = null;
+//
+// === ПРАВИЛЬНАЯ CRM-ИНТЕГРАЦИЯ ===
+//
+async function safeUpdateLead({ portal, dialogId, fields, session }) {
   try {
-    abcpSearch = await searchOemForText({
+    if (!fields || Object.keys(fields).length === 0) return;
+
+    logger.info(CTX, "CRM update request", fields);
+
+    // создаём REST-клиент Bitrix
+    const rest = makeBitrixClient({ domain: portal });
+
+    // создаём CRM API
+    const leads = createLeadsApi(rest);
+
+    // гарантируем существование лида
+    const leadId = await leads.ensureLeadForDialog(session, {
       dialogId,
-      text,
-      maxOems: 5,
-      maxOffersPerOem: 5,
+      source: "OPENLINES",
     });
-    if (abcpSearch?.found) {
-      console.log(
-        "[llm-bot] ABCP OEM search found",
-        abcpSearch.oems.length,
-        "numbers"
-      );
-    } else {
-      console.log("[llm-bot] ABCP OEM search: no numbers or no offers");
-    }
-  } catch (e) {
-    console.error("[llm-bot] ABCP OEM search error:", e);
+
+    // обновляем поля
+    await leads.updateLead(leadId, fields);
+
+    logger.info(CTX, `CRM lead updated: ${leadId}`);
+  } catch (err) {
+    logger.error(CTX, "Ошибка CRM safeUpdateLead", err);
   }
-
-  if (!text) return;
-
-  // 3) Вызов LLM-внутреннего движка (с историей + ABCP-данными).
-  // LLM полностью формирует текст ответа и даёт структурные данные в JSON,
-  // а этот хендлер только выполняет её решения (CRM, ABCP и т.п.)
-  const {
-    replyText,
-    stage,
-    needOperator,
-    updateLeadFields,
-    comment,
-    clientName,
-  } = await runFunnelLLM({ session, text, abcpSearch });
-
-  const leadFields = { ...(updateLeadFields || {}) };
-
-  // Имя клиента из LLM (clientName или NAME в updateLeadFields)
-  if (typeof clientName === "string" && clientName.trim()) {
-    const cleanName = clientName.trim();
-    if (!session.name || session.name === "—") {
-      session.name = cleanName;
-    }
-    if (!leadFields.NAME) {
-      leadFields.NAME = cleanName;
-    }
-  }
-
-  // Телефон из LLM (если она положила в updateLeadFields.PHONE)
-  if (leadFields.PHONE) {
-    const phone = extractPhone(leadFields.PHONE);
-    if (phone) {
-      session.phone = phone;
-      leadFields.PHONE = phone;
-    } else {
-      delete leadFields.PHONE;
-    }
-  }
-
-  // 4) Обновление лида, если он уже есть
-  if (session.leadId) {
-    try {
-      const fieldsToUpdate = { ...leadFields };
-      if (Object.keys(fieldsToUpdate).length > 0) {
-        await leadsApi.updateLead(session.leadId, fieldsToUpdate);
-      }
-      if (stage) {
-        await leadsApi.setLeadStage(session.leadId, stage);
-      }
-      if (comment && comment.trim()) {
-        await leadsApi.appendComment(session.leadId, comment.trim());
-      }
-    } catch (e) {
-      console.error("[llm-bot] Failed to update lead", session.leadId, e);
-    }
-  } else {
-    console.log(
-      "[llm-bot] No leadId yet, skip CRM update. Stage:",
-      stage,
-      "updateLeadFields:",
-      Object.keys(leadFields || {}).length,
-      "comment:",
-      !!comment
-    );
-  }
-
-  if (needOperator) {
-    console.log(
-      "[llm-bot] needOperator = true (перевод на оператора пока не реализован)"
-    );
-  }
-
-  await sendMessage(rest, dialogId, replyText);
 }
