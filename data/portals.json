@@ -1,0 +1,13 @@
+{
+  "rozzattti.bitrix24.ru": {
+    "domain": "rozzattti.bitrix24.ru",
+    "baseUrl": "https://rozzattti.bitrix24.ru/rest/",
+    "memberId": "f87c4c4e3ecf61c1574c95a65c071a89",
+    "accessToken": "8b1a1e69007da370007b9a8e000024420000076f28844176dd1001a74c65402827bebc",
+    "refreshToken": "7b994569007da370007b9a8e00002442000007edaa5a6ae6577bd9148f0eda859e789c",
+    "expires": 3600,
+    "updatedAt": "2025-11-19T18:29:15.884Z",
+    "applicationToken": "bb115d0a238719eb003908083f926655",
+    "expiresAt": 1763580555884
+  }
+}

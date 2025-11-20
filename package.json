@@ -1,0 +1,23 @@
+{
+  "name": "bitrix-bot-core",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "nodemon --ext js,json --watch src --exec node src/index.js",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "16.6.1",
+    "fastify": "^4.27.2",
+    "fastify-raw-body": "4.3.0",
+    "js-yaml": "^4.1.0",
+    "openai": "^6.9.0",
+    "pino": "^9.5.0",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7",
+    "pino-pretty": "^11.2.2"
+  }
+}
