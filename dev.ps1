@@ -1,37 +1,42 @@
+# dev.ps1 — удобный запуск бота в DEV: UTF-8 + туннель + сервер
+
 [CmdletBinding()]
 param(
   [int]$Port = 8080
 )
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Set-Location $PSScriptRoot
 
-# 0) Включаем UTF-8, чтобы логи с русским текстом не были кракозябрами
+# 0) Нормальная кодировка для логов (чтобы не было кракозябр)
 try {
   chcp 65001 | Out-Null
-} catch {
-  # если вдруг chcp недоступен — просто игнорируем
-}
+} catch { }
+
 try {
   [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-} catch {
-  # тоже можно тихо игнорировать
-}
+} catch { }
 
-# 1) если cloudflared не запущен — поднимем и сохраним URL
+Write-Host "[dev] Кодировка консоли: UTF-8" -ForegroundColor Cyan
+
+# 1) Поднимаем Cloudflare-туннель, если он ещё не запущен
 if (-not (Get-Process cloudflared -ErrorAction SilentlyContinue)) {
-  Write-Host "[i] Туннель не найден — запускаю..."
+  Write-Host "[dev] Туннель не найден — запускаю..." -ForegroundColor Yellow
   & .\start-tunnel-once.ps1 -Port $Port
 } else {
   $rt = Join-Path (Get-Location).Path '_runtime'
   $tx = Join-Path $rt 'BASE_URL.txt'
   if (Test-Path $tx) {
     $u = (Get-Content -Raw -LiteralPath $tx).Trim()
-    if ($u) { Write-Host "[i] Туннель уже работает: $u" }
+    if ($u) {
+      Write-Host "[dev] Туннель уже работает: $u" -ForegroundColor Green
+    }
   } else {
-    Write-Host "[!] Туннель работает, но BASE_URL.txt не найден. При случае запусти start-tunnel-once.ps1."
+    Write-Host "[dev] Внимание: cloudflared запущен, но BASE_URL.txt не найден." -ForegroundColor Yellow
   }
 }
 
-# 2) перезапуск сервера
+# 2) Запускаем бота
+Write-Host "[dev] Стартую сервер бота..." -ForegroundColor Cyan
 & .\run-bot.ps1 -Port $Port
