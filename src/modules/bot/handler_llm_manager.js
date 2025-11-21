@@ -1,4 +1,4 @@
-// src/modules/bot/handler_llm_manager.js (v3, фикс res/reply + заглушка CRM)
+// src/modules/bot/handler_llm_manager.js (v4, фикс логгера)
 // ЧИСТЫЙ ОРКЕСТРАТОР ДИАЛОГА
 // Вся бизнес-логика — в LLM + модулях (ABCP, CRM, OL)
 
@@ -29,7 +29,10 @@ function safeReply(res, payload = "ok") {
       return res.send(payload); // запасной вариант
     }
   } catch (e) {
-    logger.error(CTX, "Ошибка при отправке ответа Bitrix", e);
+    logger.error(
+      { ctx: CTX, error: e },
+      "Ошибка при отправке ответа Bitrix",
+    );
   }
 }
 
@@ -41,14 +44,22 @@ export async function processIncomingBitrixMessage(req, res) {
     const msg = normalizeIncomingMessage(req.body);
 
     if (!msg || !msg.portal || !msg.dialogId) {
-      logger.warn(CTX, "Некорректное входящее сообщение", req.body);
+      logger.warn(
+        { ctx: CTX, body: req.body },
+        "Некорректное входящее сообщение",
+      );
       safeReply(res);
       return;
     }
 
     logger.info(
-      CTX,
-      `Входящее сообщение: "${msg.text}" | ${msg.portal} / ${msg.dialogId}`,
+      {
+        ctx: CTX,
+        portal: msg.portal,
+        dialogId: msg.dialogId,
+        fromUserId: msg.fromUserId,
+      },
+      `Входящее сообщение: "${msg.text}"`,
     );
 
     const session = getSession(msg.portal, msg.dialogId) || createEmptySession();
@@ -58,7 +69,7 @@ export async function processIncomingBitrixMessage(req, res) {
     // 1) LLM → strict JSON
     //
     const llm = await runFunnelLLM(llmInput);
-    logger.debug(CTX, "LLM structured JSON:", llm);
+    logger.debug({ ctx: CTX, llm }, "LLM structured JSON");
 
     //
     // 2) ABCP (ТОЛЬКО если LLM запросил)
@@ -114,7 +125,7 @@ export async function processIncomingBitrixMessage(req, res) {
 
     safeReply(res);
   } catch (err) {
-    logger.error(CTX, "Ошибка обработки сообщения", err);
+    logger.error({ ctx: CTX, err }, "Ошибка обработки сообщения");
     safeReply(res);
   }
 }
@@ -141,15 +152,15 @@ function createEmptySession() {
 async function safeDoABCP(oems) {
   try {
     if (!oems || !oems.length) return {};
-    logger.info(CTX, "ABCP lookup", { oems });
+    logger.info({ ctx: CTX, oems }, "ABCP lookup");
 
     // Новый API ABCP: один вызов по массиву OEM, возвращает
     // { OEM: { offers: [...] }, ... }
     const result = await searchManyOEMs(oems);
-    logger.debug(CTX, "ABCP result", result);
+    logger.debug({ ctx: CTX, result }, "ABCP result");
     return result;
   } catch (err) {
-    logger.error(CTX, "Ошибка ABCP", err);
+    logger.error({ ctx: CTX, err }, "Ошибка ABCP");
     return {};
   }
 }
