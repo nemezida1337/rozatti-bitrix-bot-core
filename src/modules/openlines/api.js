@@ -53,12 +53,10 @@ export async function transferToOperator({ api, operatorId, sessionId }) {
 }
 
 /**
- * Отправка сообщения от бота в диалог Открытой линии
- * Используем ИМЕННО imbot.message.add, а не im.message.add
- * (по докам Bitrix24 для чат-ботов).
+ * Отправка сообщения от бота в диалог (LLM-контур).
  *
- * См. Bitrix24 REST:
- * - imbot.message.add — отправка сообщения от чат-бота
+ * Здесь используем imbot.message.add, как в рабочей версии,
+ * которая уже светилась в логах как success.
  */
 export async function sendOL(domain, dialogId, message) {
   try {
@@ -68,35 +66,43 @@ export async function sendOL(domain, dialogId, message) {
 
     const api = makeBitrixClient({ domain });
 
-    await api.call("imbot.message.add", {
-      DIALOG_ID: dialogId,
-      MESSAGE: message,
-    });
+    const rawId = String(dialogId);
+    const payload = { MESSAGE: message };
+
+    if (rawId.startsWith("chat")) {
+      // классический DIALOG_ID вида "chat15684"
+      payload.DIALOG_ID = rawId;
+    } else if (/^\d+$/.test(rawId)) {
+      // чистый числовой ID — используем как CHAT_ID
+      payload.CHAT_ID = Number(rawId);
+    } else {
+      // fallback — отправляем как есть в DIALOG_ID
+      payload.DIALOG_ID = rawId;
+    }
+
+    const res = await api.call("imbot.message.add", payload);
 
     logger.info(
-      { domain, dialogId },
-      "openlines: sendOL imbot.message.add success"
+      { domain, dialogId, payload, res },
+      "openlines: sendOL imbot.message.add success",
     );
   } catch (e) {
     logger.error(
       { e: String(e), domain, dialogId },
-      "openlines: sendOL failed"
+      "openlines: sendOL failed",
     );
-    // не пробрасываем наверх, чтобы не ронять обработчик целиком
+    // не пробрасываем, чтобы не ронять LLM-обработчик
   }
 }
 
 /**
- * "Печатает..." — временно делаем no-op,
- * чтобы не плодить лишние REST-вызовы и ошибки.
- * Если захочешь — потом подключим реальный метод им.XXX
- * для индикации набора текста.
+ * "Печатает..." — пока no-op, чтобы не плодить REST-ошибки.
  */
 export async function sendTyping(domain, dialogId) {
   try {
     logger.info({ domain, dialogId }, "openlines: typing noop");
     return;
   } catch {
-    // игнор
+    // ignore
   }
 }

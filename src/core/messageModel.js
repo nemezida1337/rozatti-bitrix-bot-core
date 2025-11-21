@@ -1,4 +1,4 @@
-// src/core/messageModel.js (v2)
+// src/core/messageModel.js (fixed)
 // Унифицированная нормализация входящих сообщений Bitrix24 → формат для LLM.
 
 import { logger } from "./logger.js";
@@ -12,7 +12,7 @@ const CTX = "messageModel";
  *
  * {
  *   portal: "rozatti.bitrix24.ru",
- *   dialogId: "12345|6789",
+ *   dialogId: "chat15684",
  *   text: "сообщение",
  *   attachments: [...],
  *   isForwarded: boolean
@@ -40,16 +40,21 @@ export function normalizeIncomingMessage(body) {
 }
 
 /**
- * Извлекаем dialogId (chat_id)
+ * Извлекаем dialogId (DIALOG_ID, а не CHAT_ID)
  */
 function extractDialogId(body) {
   try {
-    // Открытые линии
+    // 1) Открытые линии/бот: Bitrix шлёт DIALOG_ID вида "chat15684"
+    if (body?.data?.PARAMS?.DIALOG_ID) {
+      return String(body.data.PARAMS.DIALOG_ID);
+    }
+
+    // 2) Если вдруг DIALOG_ID нет — fallback к CHAT_ID
     if (body?.data?.PARAMS?.CHAT_ID) {
       return String(body.data.PARAMS.CHAT_ID);
     }
 
-    // IM чат
+    // 3) Общий IM чат
     if (body?.data?.CHAT?.ID) {
       return String(body.data.CHAT.ID);
     }

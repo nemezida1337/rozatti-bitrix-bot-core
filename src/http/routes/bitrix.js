@@ -1,93 +1,123 @@
+// src/http/routes/bitrix.js
+
 import { logger } from "../../core/logger.js";
 import { upsertPortal, getPortal } from "../../core/store.js";
-import { handleOnImBotMessageAdd, ensureBotRegistered, handleOnImCommandAdd } from "../../modules/bot/register.js";
+import {
+  handleOnImBotMessageAdd,
+  ensureBotRegistered,
+  handleOnImCommandAdd,
+} from "../../modules/bot/register.js";
 
 function isInstallEvent(event) {
-  return event === "onappinstall" || event === "onappinstalled" || event === "onappinstalltest";
+  if (!event) return false;
+  const e = String(event).toLowerCase();
+  return (
+    e === "onappinstall" ||
+    e === "onappinstalled" ||
+    e === "onappinstalltest"
+  );
+}
+
+function extractDomain(body = {}) {
+  // onappinstall — auth снаружи
+  if (body?.auth?.domain) return body.auth.domain;
+  if (body?.auth?.DOMAIN) return body.auth.DOMAIN;
+
+  // обычные события — AUTH внутри data
+  if (body?.data?.AUTH?.domain) return body.data.AUTH.domain;
+  if (body?.data?.AUTH?.DOMAIN) return body.data.AUTH.DOMAIN;
+
+  return null;
 }
 
 export async function registerRoutes(app) {
   app.post("/bitrix/events", async (req, reply) => {
     const body = req.body || {};
-    const event = String(body?.event || "").toLowerCase();
+    const rawEvent = body?.event || "";
+    const event = String(rawEvent || "").toLowerCase();
 
-    logger.info({ event, keys: Object.keys(body || {}) }, "Incoming event");
+    // базовый лог входящего события
+    logger.info(
+      { event, keys: Object.keys(body || {}) },
+      "Incoming event"
+    );
 
-    const domain =
-      body?.auth?.domain ||
-      body?.auth?.client_endpoint?.replace(/^https?:\/\/(.*?)(\/.*)?$/, "$1") ||
-      "unknown";
+    const domain = extractDomain(body);
 
-    // 1) Установка приложения: сохраняем токены + application_token
-    if (isInstallEvent(event)) {
-      const baseUrl = body?.auth?.client_endpoint || (`https://${domain}`);
-      const tokenData = {
-        domain,
-        baseUrl,
-        memberId: body?.auth?.member_id,
-        accessToken: body?.auth?.access_token,
-        refreshToken: body?.auth?.refresh_token,
-        expires: body?.auth?.expires,
-        applicationToken: body?.auth?.application_token
-      };
-      upsertPortal(domain, tokenData);
-      logger.info({ domain }, "ONAPPINSTALL: tokens saved");
+    try {
+      // === УСТАНОВКА / ПЕРЕУСТАНОВКА ПРИЛОЖЕНИЯ ===
+      if (isInstallEvent(event)) {
+        if (!domain) {
+          logger.error({ body }, "ONAPPINSTALL without domain");
+          return reply.code(400).send({ error: "DOMAIN_REQUIRED" });
+        }
 
-      try {
-        await ensureBotRegistered(domain);
-      } catch (e) {
-        logger.error({ e, domain }, "Bot registration failed");
-      }
-      return reply.send({ result: "ok" });
-    }
+        await upsertPortal(domain, body.auth || body.data?.AUTH || {});
+        logger.info({ domain }, "ONAPPINSTALL: tokens saved");
 
-    // 2) Для всех остальных событий сверяем application_token (как в официальных примерах)
-    const portal = getPortal(domain);
-    const incomingAppToken = body?.auth?.application_token;
+        try {
+          await ensureBotRegistered(domain);
+        } catch (e) {
+          logger.error({ e, domain }, "Bot registration failed");
+        }
 
-    if (portal?.applicationToken && incomingAppToken && portal.applicationToken !== incomingAppToken) {
-      logger.warn({ domain }, "application_token mismatch");
-      return reply.code(403).send({ error: "bad application_token" });
-    }
-
-    // 3) Маршруты событий бота
-    if (event === "onimbotmessageadd") {
-      if (!portal?.accessToken || !portal?.baseUrl) {
-        logger.warn({ domain }, "No portal tokens found");
-        return reply.code(401).send({ error: "no tokens" });
-      }
-      try {
-        await handleOnImBotMessageAdd({ body, portal, domain });
         return reply.send({ result: "ok" });
-      } catch (e) {
-        logger.error({ err: e }, "Message handler failed");
-        return reply.code(500).send({ error: "handler failed" });
       }
-    }
 
-    if (event === "onimcommandadd") {
-      if (!portal?.accessToken || !portal?.baseUrl) {
-        logger.warn({ domain }, "No portal tokens found");
-        return reply.code(401).send({ error: "no tokens" });
+      // дальше — любые обычные события, без домена не работаем
+      if (!domain) {
+        logger.warn({ event, body }, "Event without domain");
+        return reply.code(400).send({ error: "DOMAIN_REQUIRED" });
       }
-      try {
-        await handleOnImCommandAdd({ body, portal, domain });
+
+      const portal = await getPortal(domain);
+
+      // === ДОП. ЛОГ ДЛЯ onImBotMessageAdd — ВИДИМ ТЕКСТ И DIALOG_ID ===
+      if (event === "onimbotmessageadd") {
+        const params = body?.data?.PARAMS || body?.data?.params || {};
+        const logPayload = {
+          domain,
+          dialogId: params.DIALOG_ID || params.DIALOG || params.CHAT_ID,
+          chatId: params.CHAT_ID,
+          fromUserId: params.FROM_USER_ID,
+          messageId: params.MESSAGE_ID,
+          text: params.MESSAGE || body?.data?.TEXT || null,
+        };
+
+        logger.info(logPayload, "[LLM] Incoming bot message");
+      }
+
+      // === МАРШРУТИЗАЦИЯ СОБЫТИЙ ===
+
+      if (event === "onimbotmessageadd") {
+        await handleOnImBotMessageAdd({ portal, body });
         return reply.send({ result: "ok" });
-      } catch (e) {
-        logger.error({ err: e }, "Command handler failed");
-        return reply.code(500).send({ error: "handler failed" });
       }
-    }
 
-    // Дополнительно просто логируем (можно развить позже)
-    if (event === "onimbotmessageupdate" || event === "onimbotmessagedelete" || event === "onimbotjoinchat" || event === "onimbotdelete") {
-      logger.info({ event }, "Event received (no-op for now)");
+      if (event === "onimcommandadd") {
+        await handleOnImCommandAdd({ portal, body });
+        return reply.send({ result: "ok" });
+      }
+
+      // Прочие бот-события пока просто логируем
+      if (
+        event === "onimbotmessageupdate" ||
+        event === "onimbotjoinchat" ||
+        event === "onimbotdelete"
+      ) {
+        logger.info({ event, domain }, "Bot event (no-op for now)");
+        return reply.send({ result: "noop" });
+      }
+
+      // Всё остальное — в no-op, но с логом
+      logger.info({ event, domain }, "Event not explicitly handled");
       return reply.send({ result: "noop" });
+    } catch (e) {
+      logger.error(
+        { e, event, domain, body },
+        "Error while handling Bitrix event"
+      );
+      return reply.code(500).send({ error: "INTERNAL_ERROR" });
     }
-
-    logger.info({ event }, "Event not explicitly handled");
-    return reply.send({ result: "noop" });
   });
 }
-
-

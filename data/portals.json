@@ -3,11 +3,21 @@
     "domain": "rozzattti.bitrix24.ru",
     "baseUrl": "https://rozzattti.bitrix24.ru/rest/",
     "memberId": "f87c4c4e3ecf61c1574c95a65c071a89",
-    "accessToken": "97631f69007da370007b9a8e0000244200000742f454d50495579dd32f59b13ed3e337",
-    "refreshToken": "87e24669007da370007b9a8e00002442000007edb3d95f9ec9f532b4b786dd17097b5e",
-    "expires": 3600,
-    "updatedAt": "2025-11-20T17:53:11.941Z",
+    "accessToken": "74082069007da370007b9a8e000024420000076e94a872c95b64a0c8436d11ea406b49",
+    "refreshToken": "64874769007da370007b9a8e0000244200000754c2cff59150732110fed5d5adbc8ce1",
+    "expires": "1763707063",
+    "updatedAt": "2025-11-21T05:37:44.423Z",
     "applicationToken": "bb115d0a238719eb003908083f926655",
-    "expiresAt": 1763664791941
+    "expiresAt": 1763706996578,
+    "access_token": "b7082069007da370007b9a8e00002442000007fa905dc25a61a1c592f99ecc340954bd",
+    "expires_in": "3600",
+    "scope": "crm,imopenlines,imbot,im",
+    "server_endpoint": "https://oauth.bitrix24.tech/rest/",
+    "status": "L",
+    "client_endpoint": "https://rozzattti.bitrix24.ru/rest/",
+    "member_id": "f87c4c4e3ecf61c1574c95a65c071a89",
+    "user_id": "9282",
+    "refresh_token": "a7874769007da370007b9a8e0000244200000727003479d5c24be3dd744213b47c30c2",
+    "application_token": "bb115d0a238719eb003908083f926655"
   }
 }
