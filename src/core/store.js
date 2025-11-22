@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+
 import { logger } from "./logger.js";
 
 const tokensFile = process.env.TOKENS_FILE || "./data/portals.json";

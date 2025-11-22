@@ -2,15 +2,16 @@
 // ЧИСТЫЙ ОРКЕСТРАТОР ДИАЛОГА
 // Вся бизнес-логика — в LLM + модулях (ABCP, CRM, OL)
 
-import { logger } from "../../core/logger.js";
-import { searchManyOEMs } from "../external/pricing/abcp.js";
-import { createLeadsApi } from "../crm/leads.js";
-import { prepareFunnelContext, runFunnelLLM } from "../llm/llmFunnelEngine.js";
-import { normalizeIncomingMessage } from "../../core/messageModel.js";
-import { saveSession, getSession } from "./sessionStore.js";
-import { sendOL } from "../openlines/api.js";
-import { makeBitrixClient } from "../../core/bitrixClient.js";
 import { crmSettings } from "../../../config/settings.crm.js";
+import { makeBitrixClient } from "../../core/bitrixClient.js";
+import { logger } from "../../core/logger.js";
+import { normalizeIncomingMessage } from "../../core/messageModel.js";
+import { createLeadsApi } from "../crm/leads.js";
+import { searchManyOEMs } from "../external/pricing/abcp.js";
+import { prepareFunnelContext, runFunnelLLM } from "../llm/llmFunnelEngine.js";
+import { sendOL } from "../openlines/api.js";
+
+import { saveSession, getSession } from "./sessionStore.js";
 
 const CTX = "handler_llm";
 

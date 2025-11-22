@@ -7,6 +7,7 @@
 // — работает вместе с openaiClient.js (SYSTEM_PROMPT_V4)
 
 import { logger } from "../../core/logger.js";
+
 import { generateStructuredFunnelReply } from "./openaiClient.js";
 
 const CTX = "llmFunnel";

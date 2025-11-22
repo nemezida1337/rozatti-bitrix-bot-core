@@ -5,7 +5,10 @@
   "private": true,
   "scripts": {
     "dev": "nodemon --ext js,json --watch src --exec node src/index.js",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "lint": "eslint src --ext .js",
+    "lint:fix": "eslint src --ext .js --fix",
+    "format": "prettier --write \"src/**/*.js\""
   },
   "dependencies": {
     "axios": "^1.13.2",
@@ -18,7 +21,11 @@
     "uuid": "^11.1.0"
   },
   "devDependencies": {
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-import": "^2.32.0",
     "nodemon": "^3.1.7",
-    "pino-pretty": "^11.2.2"
+    "pino-pretty": "^11.2.2",
+    "prettier": "^3.6.2"
   }
 }

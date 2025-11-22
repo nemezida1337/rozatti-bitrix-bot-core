@@ -6,6 +6,7 @@
 // сбор полного ФИО и адреса (ПВЗ СДЭК или самовывоз).
 
 import OpenAI from "openai";
+
 import { logger } from "../../core/logger.js";
 import "../../core/env.js"; // подхватываем .env
 

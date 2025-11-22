@@ -1,6 +1,6 @@
 import { logger } from "./logger.js";
-import { getPortal } from "./store.js";
 import { refreshTokens } from "./oauth.js";
+import { getPortal } from "./store.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

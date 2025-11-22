@@ -1,8 +1,8 @@
 // src/modules/openlines/api.js
 // Утилиты для работы с Открытыми линиями и сообщениями бота
 
-import { logger } from "../../core/logger.js";
 import { makeBitrixClient } from "../../core/bitrixClient.js";
+import { logger } from "../../core/logger.js";
 
 /**
  * Приветственное сообщение через стандартный метод

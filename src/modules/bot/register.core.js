@@ -1,9 +1,9 @@
 // src/modules/bot/register.core.js
 
+import { makeBitrixClient } from "../../core/bitrixClient.js";
 import { logger } from "../../core/logger.js";
 import { getPortal } from "../../core/store.js";
-import { makeBitrixClient } from "../../core/bitrixClient.js";
-import { sendWelcome, finishDialog, transferToOperator } from "../openlines/api.js";
+import { sendWelcome } from "../openlines/api.js";
 // Раньше здесь был tryHandleOemMessage, теперь ABCP используется только как поиск в LLM-обработчике
 // import { tryHandleSelectionMessage } from "../external/pricing/abcp.js";
 

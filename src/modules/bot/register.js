@@ -5,10 +5,10 @@ console.info("[LLM] register wrapper loaded");
 
 // Реэкспортируем всё, что явно экспортируется из core
 export * from "./register.core.js";
+import { processIncomingBitrixMessage } from "./handler_llm_manager.js";
 import * as core from "./register.core.js";
 
 // Новый LLM-хендлер (подменяет старый)
-import { processIncomingBitrixMessage } from "./handler_llm_manager.js";
 
 // --- Достаём функции из core ---
 // Могут быть либо named-экспортами, либо лежать в default-объекте.

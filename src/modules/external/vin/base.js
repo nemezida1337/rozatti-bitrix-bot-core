@@ -6,6 +6,6 @@
  */
 export class VinProvider {
   id() { return "base"; }
-  canHandle(q) { return false; }
-  async fetchInfo(vin) { throw new Error("not implemented"); }
+  canHandle(_q) { return false; }
+  async fetchInfo(_vin) { throw new Error("not implemented"); }
 }
