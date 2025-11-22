@@ -1,5 +1,5 @@
 export class PricingProvider {
   id() { return "base"; }
-  canHandle(q) { return false; }
-  async price(partNumber) { throw new Error("not implemented"); }
+  canHandle(_q) { return false; }
+  async price(_partNumber) { throw new Error("not implemented"); }
 }

@@ -1,7 +1,9 @@
 import Fastify from "fastify";
 import fastifyRawBody from "fastify-raw-body";
-import { logger } from "./logger.js";
+
 import { registerRoutes } from "../http/routes/bitrix.js";
+
+import { logger } from "./logger.js";
 
 export async function buildServer() {
   const app = Fastify({ logger: false });
