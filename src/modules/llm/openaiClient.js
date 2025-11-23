@@ -12,6 +12,33 @@ import "../../core/env.js"; // подхватываем .env
 
 const CTX = "openai";
 
+// ЕДИНЫЙ КОНТРАКТ ДЛЯ LLM (действия/стадии)
+export const LLM_ACTIONS = Object.freeze({
+  REPLY: "reply",
+  ABCP_LOOKUP: "abcp_lookup",
+  ASK_NAME: "ask_name",
+  ASK_PHONE: "ask_phone",
+  HANDOVER_OPERATOR: "handover_operator",
+});
+
+export const LLM_STAGES = Object.freeze({
+  NEW: "NEW",
+  PRICING: "PRICING",
+  CONTACT: "CONTACT",
+  FINAL: "FINAL",
+});
+
+/**
+ * @typedef {Object} LLMFunnelResponse
+ * @property {"reply"|"abcp_lookup"|"ask_name"|"ask_phone"|"handover_operator"} action
+ * @property {string} reply
+ * @property {"NEW"|"PRICING"|"CONTACT"|"FINAL"} stage
+ * @property {boolean} need_operator
+ * @property {Object<string, any>} update_lead_fields
+ * @property {string|null} client_name
+ * @property {string[]} oems
+ */
+
 const apiKey = process.env.OPENAI_API_KEY || null;
 let client = null;
 
@@ -384,7 +411,7 @@ OEM-номера — это коды запчастей вроде "5G4071677D",
   ("самовывоз или доставка СДЭКом", "укажите адрес ПВЗ СДЭК" и т.п.),
   и user_message содержит ответ:
 
-    - Если клиент явно пишет "самовывоз", "заберу сам", "приезду в ПВЗ" и НЕ указывает адрес:
+    - Если клиент явно пишет "самовывоз", "заберу сам", "приеду в ПВЗ" и НЕ указывает адрес:
         - Считай, что способ получения — самовывоз.
         - Можно добавить в update_lead_fields.COMMENTS строку:
           "Способ получения: самовывоз из ПВЗ Rozatti."
@@ -446,14 +473,14 @@ OEM-номера — это коды запчастей вроде "5G4071677D",
  * Главная функция, которую вызывает LLM-пайплайн.
  *
  * @param {{ history: Array<{role: string, content: string}>, model?: string }} param0
- * @returns {Promise<{action:string, reply:string, stage:string, need_operator:boolean, update_lead_fields:Object, client_name:string|null, oems:string[]}>}
+ * @returns {Promise<LLMFunnelResponse>}
  */
 export async function generateStructuredFunnelReply({ history, model }) {
   if (!client) {
     return {
-      action: "reply",
+      action: LLM_ACTIONS.REPLY,
       reply: "Сейчас техническая пауза. Передам информацию менеджеру.",
-      stage: "NEW",
+      stage: LLM_STAGES.NEW,
       need_operator: true,
       update_lead_fields: {},
       client_name: null,
@@ -513,6 +540,12 @@ export async function generateStructuredFunnelReply({ history, model }) {
 
 // ---- НОРМАЛИЗАЦИЯ ОТВЕТА ----
 
+/**
+ * Нормализация ответа LLM к единому контракту LLMFunnelResponse.
+ *
+ * @param {any} r
+ * @returns {LLMFunnelResponse}
+ */
 function normalize(r) {
   // Fallback-адаптер старого формата:
   // { "response": { OEM: "строка" | { price_range: {...}, availability?: ... }, ... } }
@@ -543,8 +576,8 @@ function normalize(r) {
     }
 
     r.reply = lines.join("\n");
-    r.action = "reply";
-    r.stage = r.stage || "PRICING";
+    r.action = LLM_ACTIONS.REPLY;
+    r.stage = r.stage || LLM_STAGES.PRICING;
     r.need_operator = !!r.need_operator;
     r.update_lead_fields = r.update_lead_fields || {};
     r.client_name = r.client_name || null;
@@ -552,9 +585,9 @@ function normalize(r) {
   }
 
   return {
-    action: r.action || "reply",
+    action: r.action || LLM_ACTIONS.REPLY,
     reply: r.reply || "",
-    stage: r.stage || "NEW",
+    stage: r.stage || LLM_STAGES.NEW,
     need_operator: !!r.need_operator,
     update_lead_fields: r.update_lead_fields || {},
     client_name: r.client_name || null,
@@ -564,9 +597,9 @@ function normalize(r) {
 
 function fallbackResponse() {
   return {
-    action: "reply",
+    action: LLM_ACTIONS.REPLY,
     reply: "Что-то пошло не так. Я уже восстанавливаюсь.",
-    stage: "NEW",
+    stage: LLM_STAGES.NEW,
     need_operator: false,
     update_lead_fields: {},
     client_name: null,
