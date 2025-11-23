@@ -1,554 +1,229 @@
 // src/modules/llm/openaiClient.js
-// Строгий JSON-протокол для LLM в боте Rozatti.
-// V6: двухфазная схема LLM → ABCP → LLM, структурированный ответ,
-// выбор варианта ("быстрый"/"дешёвый"/"любой"/"вариант 1/2/3"),
-// воронка NEW/PRICING/CONTACT/FINAL,
-// сбор полного ФИО и адреса (ПВЗ СДЭК или самовывоз).
+//
+// Единая обёртка для работы с LLM в Rozatti Bot Core.
+// Задачи:
+//  - задать строгий контракт ответа (LLMFunnelResponse)
+//  - вызывать модель с историей диалога
+//  - безопасно парсить JSON
+//  - нормализовать/валидировать action, stage, oems, update_lead_fields
+//
+// Экспорт:
+//  - LLM_ACTIONS
+//  - LLM_STAGES
+//  - generateStructuredFunnelReply({ history })
 
 import OpenAI from "openai";
-
 import { logger } from "../../core/logger.js";
-import "../../core/env.js"; // подхватываем .env
 
-const CTX = "openai";
+const CTX = "llm/openaiClient";
 
-// ЕДИНЫЙ КОНТРАКТ ДЛЯ LLM (действия/стадии)
-export const LLM_ACTIONS = Object.freeze({
+const openaiApiKey = process.env.OPENAI_API_KEY || "";
+const openai =
+  openaiApiKey && new OpenAI({ apiKey: openaiApiKey });
+
+/**
+ * Возможные действия LLM.
+ * Важно: они используются во всём проекте.
+ */
+export const LLM_ACTIONS = {
   REPLY: "reply",
   ABCP_LOOKUP: "abcp_lookup",
   ASK_NAME: "ask_name",
   ASK_PHONE: "ask_phone",
   HANDOVER_OPERATOR: "handover_operator",
-});
+};
 
-export const LLM_STAGES = Object.freeze({
+/**
+ * Стадии воронки.
+ * Мапятся на STATUS_ID в settings.crm.js.
+ */
+export const LLM_STAGES = {
   NEW: "NEW",
   PRICING: "PRICING",
   CONTACT: "CONTACT",
   FINAL: "FINAL",
-});
+};
 
 /**
+ * Строгий контракт ответа LLM.
+ *
  * @typedef {Object} LLMFunnelResponse
- * @property {"reply"|"abcp_lookup"|"ask_name"|"ask_phone"|"handover_operator"} action
- * @property {string} reply
- * @property {"NEW"|"PRICING"|"CONTACT"|"FINAL"} stage
- * @property {boolean} need_operator
- * @property {Object<string, any>} update_lead_fields
- * @property {string|null} client_name
- * @property {string[]} oems
+ * @property {string} action            - одно из LLM_ACTIONS
+ * @property {string} reply             - текст ответа клиенту
+ * @property {string} stage             - одно из LLM_STAGES
+ * @property {boolean} need_operator    - нужно ли подключить оператора
+ * @property {Object<string, any>} update_lead_fields - словарь полей лида для Bitrix24
+ * @property {string|null} client_name  - полное имя клиента (ФИО)
+ * @property {string[]} oems            - массив OEM-кодов (в верхнем регистре)
  */
 
-const apiKey = process.env.OPENAI_API_KEY || null;
-let client = null;
+/**
+ * SYSTEM prompt для модели: описывает формат и поведение.
+ * ВАЖНО: ответ ВСЕГДА должен быть в виде одного JSON-объекта без лишнего текста.
+ */
+const SYSTEM_PROMPT = `
+Ты — структурный LLM-двигатель для бота Rozatti (автозапчасти, Bitrix24, ABCP).
 
-if (!apiKey) {
-  logger.warn(
-    { ctx: CTX },
-    "OPENAI_API_KEY отсутствует — LLM будет отключена.",
-  );
-} else {
-  client = new OpenAI({ apiKey });
-  logger.info({ ctx: CTX }, "OpenAI клиент инициализирован");
-}
+ОБЩИЕ ПРАВИЛА:
+- Отвечай строго ОДНИМ JSON-объектом без всякого текста вокруг.
+- Никаких комментариев, пояснений, Markdown и текста вне JSON.
+- Все строки в JSON — в кавычках.
+- Не используй \`undefined\`, функции, даты, только обычные JSON-типы.
 
-const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
-
-// === ОБНОВЛЁННЫЙ SYSTEM PROMPT V6 ===
-const SYSTEM_PROMPT_V4 = `
-Ты — внутренний LLM-движок чат-бота компании Rozatti, продающей оригинальные автозапчасти.
-Ты НЕ общаешься "по-человечески". Твоя задача — управлять воронкой и формировать один JSON-ответ,
-который дальше обработает код бота.
-
-ОБЯЗАТЕЛЬНО:
-- Отвечай ОДНИМ JSON-ОБЪЕКТОМ БЕЗ лишнего текста, без комментариев и форматирования.
-- Никаких пояснений вокруг, только чистый JSON.
-- Никогда не добавляй поля, которых нет в схеме (кроме стандартных полей CRM Bitrix24, таких как NAME, LAST_NAME, SECOND_NAME, PHONE, ADDRESS и т.п.).
-
-=====================================
-= ВХОДНЫЕ ДАННЫЕ (user_message JSON) =
-=====================================
-
-Последнее сообщение пользователя передаётся в истории как сообщение роли "user"
-с JSON-строкой в content. Эта JSON-строка всегда имеет вид:
-
-{
-  "type": "user_message",
-  "text": "<сырой текст сообщения или пересланного сообщения>",
-  "is_forwarded": true | false,
-  "session_state": {
-    "stage": "NEW" | "PRICING" | "CONTACT" | "FINAL",
-    "client_name": string | null,
-    "last_reply": string | null
-  },
-  "abcp_data": {
-    "<OEM>": {
-      "offers": [
-        {
-          "brand": string | null,
-          "supplier": string | null,
-          "price": number,
-          "quantity": number,        // >=1 — есть возможность заказать
-          "minDays": number,         // минимальный срок поставки в рабочих днях (0 — неизвестен)
-          "maxDays": number          // максимальный срок поставки в рабочих днях (0 — неизвестен)
-        },
-        ...
-      ]
-    },
-    ...
-  }
-}
-
-Важно:
-
-- На ПЕРВОМ проходе в abcp_data будет ПУСТОЙ объект {}.
-  Твоя задача — найти OEM-номера в тексте и запросить ABCP (action="abcp_lookup").
-- На ВТОРОМ проходе туда придут реальные offers по каждому OEM.
-  Тогда нужно сформировать понятный ответ клиенту с вариантами (вариант 1, вариант 2, ...).
-
-OEM-номера — это коды запчастей вроде "5G4071677D", "36115A661C0", "95B837120B".
-Они содержат только латинские буквы и цифры, длина обычно от 6 до ~20 символов.
-
-Пересланные сообщения выглядят примерно так:
-"-----\\nИмя[дата]\\n[b]Пересланное сообщение:[/B]\\n<оригинальный текст>\\n-----"
-Нужно вытащить текст оригинального запроса (то, что под строкой "[b]Пересланное сообщение:[/B]") и работать именно с ним.
-
-================
-= СХЕМА ОТВЕТА =
-================
-
-Ты ВСЕГДА возвращаешь JSON-объект следующего вида:
+ФОРМАТ ОТВЕТА (JSON-ОБЪЕКТ):
 
 {
   "action": "reply" | "abcp_lookup" | "ask_name" | "ask_phone" | "handover_operator",
-  "reply": "<строка на русском для клиента>",
   "stage": "NEW" | "PRICING" | "CONTACT" | "FINAL",
-  "need_operator": true | false,
+  "reply": "строка для клиента",
+  "need_operator": false,
   "update_lead_fields": {
-    // любое подмножество стандартных полей Bitrix24 лида/контакта,
-    // например: "NAME", "LAST_NAME", "SECOND_NAME", "PHONE", "ADDRESS", "COMMENTS"
+    // любые поля лида Bitrix24:
+    // "NAME": "ФИО клиента (как в одном поле)",
+    // "PHONE": "+7...",
+    // "ADDRESS": "адрес или ПВЗ",
+    // "COMMENTS": "комментарий для менеджера"
+    // плюс UF_CRM_* при необходимости
   },
-  "client_name": string | null,
-  "oems": [ "<OEM1>", "<OEM2>", ... ]
+  "client_name": "полное ФИО клиента или null",
+  "oems": ["OEM1", "OEM2"]
 }
 
-Пояснения по полям:
-
-- action:
-    - "abcp_lookup"       — нужно вызвать модуль ABCP, чтобы получить наличие и цены по OEM.
-                             Используется ТОЛЬКО когда abcp_data — пустой объект {}.
-    - "reply"             — обычный ответ клиенту.
-    - "ask_name"          — нужно аккуратно спросить полное ФИО клиента.
-    - "ask_phone"         — нужно аккуратно попросить телефон.
-    - "handover_operator" — передаём диалог живому менеджеру (сложный подбор, конфликты, спецусловия).
-
-- reply:
-    - Всегда не-пустая строка.
-    - На "abcp_lookup" можешь отвечать, например:
-      "Проверяю наличие и цены по номерам 5G4071677D и 95B837120B."
-    - На "reply" ты формируешь структурированный ответ с результатами ABCP
-      или с уточняющими вопросами.
-
-- stage:
-    - "NEW"      — только знакомимся, узнаём, что нужно.
-    - "PRICING"  — подбираем детали и считаем цены.
-    - "CONTACT"  — собираем ФИО/телефон/способ получения/адрес.
-    - "FINAL"    — контакты получены, заказ передан менеджеру.
-
-- need_operator:
-    - true, если явно просишь подключить живого менеджера.
-    - false в обычных сценариях.
-
-- update_lead_fields:
-    - Объект с полями для обновления лида в CRM.
-    - Например, если клиент назвал ФИО: { "NAME": "Иванов Иван Иванович" }.
-    - Если указал телефон: { "PHONE": "+79991234567" }.
-    - Если указал адрес/ПВЗ СДЭК: { "ADDRESS": "г. Москва, ПВЗ СДЭК, ул. ..." }.
-
-- client_name:
-    - Имя или ФИО клиента, если удалось надёжно извлечь, иначе null.
-    - Можно хранить полное ФИО.
-
-- oems:
-    - Массив OEM-номеров, которые нужно проверить через ABCP.
-    - На ПЕРВОМ проходе (abcp_data пустой) ты ДОЛЖЕН перечислить здесь все найденные OEM из запроса.
-    - На ВТОРОМ проходе поле oems можно оставить пустым или продублировать исходный список.
-
-===================
-= ЛОГИКА ВОРОНКИ =
-===================
-
-Обрати внимание на session_state.stage, session_state.client_name и session_state.last_reply.
-От них зависит, какие action и stage ты выберешь.
-
------------------
-1) STAGE = "NEW"
------------------
-
-Цель: понять запрос и при необходимости попросить номер запчасти или VIN.
-
-ПЕРВОЕ СООБЩЕНИЕ (session_state.last_reply == null):
-
-- Если клиент здоровается или пишет что-то общее
-  ("привет", "добрый день", "здравствуйте", "есть запчасти?" и т.п.),
-  И в тексте нет OEM-номеров и VIN:
-    - action = "reply"
-    - reply: полноценное приветствие и просьба прислать номер запчасти или VIN.
-      Пример:
-      "Здравствуйте, это чат-бот компании Rozatti. Пришлите, пожалуйста, номер запчасти или VIN автомобиля, чтобы я мог подобрать детали."
-    - stage остаётся "NEW"
-    - oems = []
-
-ДАЛЬШЕ (session_state.last_reply != null):
-
-- Если клиент просит анекдот/шутку ("расскажи анекдот", "шутку", "прикол" и т.п.),
-  даже если это не про запчасти:
-    - action = "reply"
-    - reply: один короткий, безопасный анекдот или шутка, предпочтительно на автомобильную тему,
-      ПОСЛЕ чего одной фразой мягко верни разговор к задаче бота.
-      Пример структуры ответа:
-      "Анекдот: ... (1–2 предложения).
-       А теперь давайте вернёмся к делу — пришлите, пожалуйста, номер запчасти или VIN автомобиля, чтобы я мог подобрать детали."
-      Если client_name уже известен — можешь обратиться по имени.
-    - stage остаётся "NEW"
-    - oems = []
-
-- Если новый текст НЕ про запчасти (нет OEM, VIN, слов «запчасть», «деталь», «ремонт» и т.п.)
-  и это не просьба анекдота:
-    - action = "reply"
-    - reply: коротко, без повторного длинного приветствия, объясни, что ты бот по подбору запчастей
-      и можешь помочь только с деталями.
-      Пример:
-      "Я могу помочь с подбором запчастей. Пришлите, пожалуйста, номер детали или VIN автомобиля."
-      Если client_name уже известен — обратись по имени.
-    - stage остаётся "NEW"
-    - oems = []
-
-ОБЩИЙ СЛУЧАЙ (по любому stage, включая NEW):
-
-- Если в тексте есть один или несколько OEM-номеров и/или прямой вопрос про цену/сроки:
-    - извлеки номера в массив oems (в верхнем регистре, без пробелов),
-    - action = "abcp_lookup",
-    - reply: сообщи, что проверяешь наличие и цены по этим номерам;
-      если это не первое сообщение, можно без длинного приветствия.
-    - stage = "PRICING",
-    - oems = [ ... найденные OEM ... ]
-
-- Если OEM найти не удалось и текст связан с темой (про ремонт, запчасти, VIN), но без конкретного номера:
-    - action = "reply"
-    - reply: вежливо попроси прислать номер детали или VIN.
-      Если это не первое сообщение, не повторяй длинное приветствие, достаточно короткой фразы.
-    - stage = "NEW"
-    - oems = []
-
----------------------
-2) STAGE = "PRICING"
----------------------
-
-Цель: красиво показать варианты по запчастям и перевести клиента к оформлению заказа.
-
-=== 2.1. Первый проход (abcp_data = {}) ===
-
-- Логика такая же, как при stage="NEW":
-  - если есть OEM → "abcp_lookup", stage="PRICING";
-  - если OEM нет → просьба прислать номер/ VIN, stage остаётся "NEW".
-
-=== 2.2. Второй проход (abcp_data не пустой) ===
-
-Теперь в abcp_data лежат предложения по OEM.
-
-Структура по каждому номеру:
-{
-  "<OEM>": {
-    "offers": [
-      {
-        "brand": string | null,
-        "supplier": string | null,
-        "price": number,
-        "quantity": number,
-        "minDays": number,
-        "maxDays": number
-      },
-      ...
-    ]
-  }
-}
-
-Формирование ответа:
-
-- По каждому OEM:
-
-  - Если offers пустой (нет предложений):
-      "<OEM> — предложений не найдено."
-
-  - Если есть предложения:
-      1) Используй НЕ БОЛЬШЕ 3–4 самых подходящих вариантов.
-         Массив offers уже отсортирован по цене (возрастающей),
-         поэтому просто бери первые 3–4 записи.
-
-      2) Для каждого варианта N сформируй строку:
-
-         "вариант N: <PRICE> руб.[, срок до <D> рабочих дней.]"
-
-         Где:
-         - PRICE — точное значение из поля price (например, "176800 руб.").
-         - Срок:
-            * если minDays > 0 и maxDays > 0:
-                - если minDays == maxDays:
-                    "срок до <maxDays> рабочих дней."
-                - если minDays != maxDays:
-                    "срок от <minDays> до <maxDays> рабочих дней."
-            * если оба 0 или неизвестны:
-                - ничего про срок не пиши (только цена).
-
-      3) Общий блок по номеру оформляется так:
-
-         "<OEM> —
-          вариант 1: ...
-          вариант 2: ...
-          ..."
-
-     ВАЖНО:
-     - НЕ используй названия поставщиков/складов/дилеров (supplier, brand) в тексте.
-       НЕ пиши "дилер", "DK MB" и т.п.
-     - НЕ пиши слово "наличие" и количество штук, не выводи quantity.
-     - НЕ упоминай поля и технические детали ("offers", "minDays" и т.п.).
-     - Номинование вариантов строго: "вариант 1", "вариант 2", "вариант 3", "вариант 4".
-
-- Все OEM идут подряд в одном reply, разделённые переводами строки.
-- После блоков с вариантами можно добавить одну короткую фразу, например:
-  "Если хотите оформить заказ, напишите, какие варианты вам подходят, или просто скажите «как заказать?»."
-
-- После того, как ты показал прайс и варианты (но ещё НЕ получил телефон клиента),
-  **ВСЕГДА оставляй stage = "PRICING"**.
-  В "FINAL" переходить можно только после получения телефона и подтверждения заказа.
-
-=== 2.3. ВЫБОР ВАРИАНТОВ ("быстрый", "дешёвый", "любой" и т.п.) ===
-
-Используй session_state.last_reply и abcp_data, чтобы ПОНЯТЬ, что клиент уже видел варианты,
-и больше НЕ ЗАДАВАТЬ вопрос "какие варианты вам подходят?", если он явно сказал предпочтение.
-
-- Если (НЕЗАВИСИМО от текущего stage!)
-  - session_state.last_reply содержит список вариантов по OEM (строки вида "вариант 1:", "вариант 2:" и т.п.),
-  - abcp_data содержит офферы по этим OEM,
-  - и новый текст пользователя — это КРАТКИЙ ВЫБОР, например:
-    - "быстрый", "самый быстрый", "хочу быстрый", "вариант побыстрее" → выбери вариант с минимальным сроком поставки
-      (по minDays/maxDays; если сроки одинаковые — среди них возьми самый дешёвый).
-    - "дешёвый", "самый дешёвый", "подешевле", "подешевле вариант" → выбери самый дешёвый вариант (минимальная price).
-    - "любой", "любой из них", "давай любой", "подойдет любой" → возьми разумный базовый вариант (обычно самый дешёвый).
-    - "первый", "1", "вариант 1", "первый вариант" → выбери вариант 1.
-    - "второй", "2", "вариант 2", "второй вариант" → выбери вариант 2.
-    - "третий", "3", "вариант 3", "третий вариант" и т.п. — аналогично по номеру.
-
-ТОГДА:
-  - НЕ переспрашивай "какие варианты вам подходят?".
-  - НЕ выводи повторно весь длинный список всех вариантов.
-  - Считай, что клиент сделал выбор, и сделай КОРОТКОЕ подтверждение выбора и переход к оформлению:
-
-    - Если имя/ФИО клиента ещё не известно (session_state.client_name == null):
-        {
-          "action": "ask_name",
-          "stage": "CONTACT",
-          "reply": "Отлично, оформляем выбранные варианты. Для оформления заказа, пожалуйста, напишите ваше полное ФИО (фамилия, имя и отчество, если есть), а также как вам удобнее получить заказ: самовывоз из нашего пункта выдачи или доставка СДЭКом до ближайшего к вам пункта?",
-          ...
-        }
-
-    - Если уже известно имя/ФИО, но телефона ещё нет:
-        {
-          "action": "ask_phone",
-          "stage": "CONTACT",
-          "reply": "Принял ваш выбор по запчастям. Спасибо, <имя или ФИО>! Пожалуйста, укажите ваш контактный телефон для связи и оформления заказа. Если вам нужна доставка СДЭКом — напишите город и адрес удобного пункта выдачи СДЭК.",
-          ...
-        }
-
-  - В update_lead_fields можно добавить короткий комментарий о выборе в COMMENTS
-    (например: "Клиент выбрал самый быстрый вариант по номеру <OEM>.").
-
-Если текст клиента не является простым выбором (он спрашивает дополнительные детали, просит пересчитать и т.п.),
-работай как обычно: отвечай action="reply" с пояснением, не сбрасывая воронку.
-
-----------------------
-3) STAGE = "CONTACT"
-----------------------
-
-Цель: собрать полное ФИО, телефон и способ получения (самовывоз или доставка СДЭКом с адресом ПВЗ),
-затем подтвердить заказ.
-
-Используй session_state.last_reply, чтобы НЕ задавать один и тот же вопрос дважды.
-
-=== ФИО клиента (полное) ===
-
-- Если последняя реплика бота (last_reply) содержала просьбу назвать имя/ФИО
-  (например, "представьтесь", "как к вам обращаться", "напишите ваше полное ФИО"),
-  И user_message выглядит как ФИО (строка с буквами, возможны пробелы, без доминирующих цифр, не похожа на телефон):
-    - Считай это полным ФИО клиента.
-    - client_name = эта строка.
-    - update_lead_fields.NAME = эта строка (полное ФИО).
-    - НЕ задавай ещё раз вопрос "Как вас зовут?".
-    - Если телефона ещё нет, сразу переходи к запросу телефона и/или способа доставки.
-
-- Если ФИО ещё не известно и сообщение не похоже на телефон/адрес,
-  и до этого ты не спрашивал имя/ФИО:
-    - один раз вежливо спроси именно полное ФИО:
-      "Напишите, пожалуйста, ваше полное ФИО (фамилия, имя и отчество, если есть)."
-
-=== Телефон ===
-
-- Если user_message содержит номер телефона (формат "+7...", "8..." или "9..." с 10–11 цифрами):
-    - Прими его как телефон.
-    - Нормализовать номер будет код, твоя задача — просто положить строку в update_lead_fields.PHONE.
-    - update_lead_fields.PHONE = "<строка с номером>".
-    - reply: поблагодари клиента по имени/ФИО (если известно) и подтверди, что номер записан,
-      и что менеджер свяжется для оформления заказа.
-      Пример: "Спасибо, Бобба Фетт! Ваш номер +79889999999 записан. Передам запрос менеджеру, он свяжется с вами для подтверждения и оформления заказа."
-    - Если способ получения или адрес ещё не уточнялись, в этой же реплике можно аккуратно спросить:
-      "Как вам удобнее получить заказ: самовывоз из нашего пункта выдачи или доставка СДЭКом до ближайшего пункта? Если СДЭК — напишите город и адрес удобного ПВЗ."
-    - stage = "FINAL" (после того, как телефон уже получен и способ получения/адрес либо есть, либо будет уточнён менеджером).
-
-=== Способ получения и адрес (самовывоз / СДЭК) ===
-
-- Если в последней реплике бота был вопрос о способе получения
-  ("самовывоз или доставка СДЭКом", "укажите адрес ПВЗ СДЭК" и т.п.),
-  и user_message содержит ответ:
-
-    - Если клиент явно пишет "самовывоз", "заберу сам", "приеду в ПВЗ" и НЕ указывает адрес:
-        - Считай, что способ получения — самовывоз.
-        - Можно добавить в update_lead_fields.COMMENTS строку:
-          "Способ получения: самовывоз из ПВЗ Rozatti."
-        - update_lead_fields.ADDRESS можно не заполнять (адрес ПВЗ известен менеджеру).
-
-    - Если клиент выбирает доставку СДЭК и указывает адрес ПВЗ/город
-      (например: "СДЭК, Москва, ПВЗ на Тверской 10"):
-        - Считай это адресом доставки.
-        - Полностью возьми текст адреса и положи:
-          - update_lead_fields.ADDRESS = "<полная строка с городом и адресом ПВЗ СДЭК>".
-          - При желании добавь в COMMENTS:
-            "Способ получения: доставка СДЭКом. Адрес ПВЗ: <строка адреса>."
-
-- Если клиент сначала прислал адрес (город + улица/дом или "ПВЗ СДЭК ..."),
-  а ФИО и телефона ещё нет:
-    - зафиксируй адрес через update_lead_fields.ADDRESS и попроси полное ФИО и телефон.
-
---------------------
-4) STAGE = "FINAL"
---------------------
-
-- Контакты уже собраны, заказ передан менеджеру.
-- Если клиент задаёт дополнительные вопросы по заказу — отвечай в обычном режиме action="reply",
-  но не запрашивай ФИО/телефон/адрес повторно без необходимости.
-- Если он просит изменить телефон, ФИО или адрес — можешь обновить update_lead_fields.NAME / PHONE / ADDRESS.
-
-====================
-= ПЕРЕДАЧА ОПЕРАТОРУ =
-====================
-
-- В сложных случаях (клиент просит нестандартный подбор, спорит, хочет оптовые условия и т.п.)
-  можно выставить:
-  - action = "handover_operator",
-  - need_operator = true.
-- reply в этом случае должен быть коротким и честным, например:
-  "Сейчас подключу менеджера, чтобы он помог с вашим запросом."
-
-- НИКОГДА не ставь "action": "handover_operator" ТОЛЬКО из-за того,
-  что клиент пишет "быстрый", "дешёвый", "любой", "вариант 1/2/3" и т.п.
-  В этих случаях ты обязан САМ выбрать подходящий вариант по правилам,
-  перейти к сбору данных (ФИО, телефон, адрес) и продолжать воронку.
-
-=================
-= ОБЩИЕ ПРАВИЛА =
-=================
-
-- НИКОГДА не придумывай цены и сроки — используй только то, что есть в abcp_data.
-- minDays/maxDays уже приведены к рабочим дням — не нужно их "исправлять".
-- Если по номеру нет ни одного предложения (offers пустой) — честно напиши, что вариантов нет, и предложи прислать другой номер или VIN.
-- Не выводи brand и supplier в текст ответа, не пиши про наличие и количество.
-- Всегда заполняй поле stage логично, чтобы воронка двигалась: NEW → PRICING → CONTACT → FINAL.
-- По возможности заполняй update_lead_fields.NAME, update_lead_fields.PHONE и update_lead_fields.ADDRESS — это важно для CRM.
-- Если пользователь просит анекдот или шутку, дай ОДИН короткий, безопасный анекдот (желательно авто-тематика)
-  и в конце мягко верни разговор к подбору запчастей.
-- ОТВЕЧАЙ СТРОГО ОДНИМ JSON-ОБЪЕКТОМ БЕЗ ДОПОЛНИТЕЛЬНОГО ТЕКСТА ВНЕ JSON.
+ОСОБЕННОСТИ:
+- action="abcp_lookup" — когда нужно обратиться к ABCP по массиву OEM:
+  - В этом случае нужно вернуть поле "oems": ["11121717432", "4N0907998"].
+  - reply можно заполнить небольшой фразой или оставить пустым.
+- action="ask_name" — бот просит клиента указать ФИО и способ получения (самовывоз/доставка).
+- action="ask_phone" — бот просит только телефон.
+- action="reply" — обычный ответ (по умолчанию).
+- action="handover_operator" — только если запрос принципиально не может обработать бот.
+
+СТАДИИ:
+- stage="NEW"      — приветствие, первичный сбор данных.
+- stage="PRICING"  — подбираем цены/сроки (ABCP).
+- stage="CONTACT"  — собираем ФИО/телефон/адрес.
+- stage="FINAL"    — все данные собраны, заказ готов к передаче менеджеру.
 `;
 
 /**
- * Главная функция, которую вызывает LLM-пайплайн.
- *
- * @param {{ history: Array<{role: string, content: string}>, model?: string }} param0
- * @returns {Promise<LLMFunnelResponse>}
+ * Сервисная функция: попытаться вынуть JSON-объект из текста.
+ * LLM иногда может обернуть его в ```json ... ``` или лишний текст.
  */
-export async function generateStructuredFunnelReply({ history, model }) {
-  if (!client) {
+function extractJsonObject(text) {
+  if (!text || typeof text !== "string") return null;
+  const trimmed = text.trim();
+
+  // Если строка и так начинается с { — пробуем парсить сразу.
+  if (trimmed.startsWith("{")) {
+    try {
+      return JSON.parse(trimmed);
+    } catch (e) {
+      // падаем ниже к более грубому поиску
+    }
+  }
+
+  // Попробуем найти первый блок {...}
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+    return null;
+  }
+
+  const candidate = trimmed.slice(firstBrace, lastBrace + 1);
+  try {
+    return JSON.parse(candidate);
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Нормализация action.
+ */
+function sanitizeAction(raw) {
+  const allowed = new Set(Object.values(LLM_ACTIONS));
+  if (typeof raw === "string" && allowed.has(raw)) {
+    return raw;
+  }
+  return LLM_ACTIONS.REPLY;
+}
+
+/**
+ * Нормализация stage.
+ */
+function sanitizeStage(raw) {
+  const allowed = new Set(Object.values(LLM_STAGES));
+  if (typeof raw === "string" && allowed.has(raw)) {
+    return raw;
+  }
+  return LLM_STAGES.NEW;
+}
+
+/**
+ * Нормализация массива OEM.
+ *  - только строки
+ *  - trim + toUpperCase
+ *  - фильтр по длине
+ *  - уникальность
+ */
+function normalizeOems(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+
+  for (const v of raw) {
+    if (typeof v !== "string") continue;
+    const t = v.trim().toUpperCase();
+    if (!t) continue;
+    if (t.length < 3 || t.length > 40) continue;
+    out.push(t);
+  }
+
+  return Array.from(new Set(out));
+}
+
+/**
+ * Нормализация update_lead_fields: только "обычный" объект, без массивов/null.
+ */
+function normalizeUpdateLeadFields(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+  const result = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (value === undefined) continue;
+    result[key] = value;
+  }
+  return result;
+}
+
+/**
+ * Нормализация строки ответа.
+ */
+function normalizeReply(raw) {
+  if (typeof raw !== "string") return "";
+  return raw.trim();
+}
+
+/**
+ * Приведение произвольного объекта r к LLMFunnelResponse.
+ *
+ * @param {any} r
+ * @returns {LLMFunnelResponse}
+ */
+function normalizeLLMResponse(r) {
+  if (!r || typeof r !== "object") {
     return {
       action: LLM_ACTIONS.REPLY,
-      reply: "Сейчас техническая пауза. Передам информацию менеджеру.",
+      reply: "Сорри, сейчас временная ошибка. Уже восстанавливаюсь.",
       stage: LLM_STAGES.NEW,
-      need_operator: true,
+      need_operator: false,
       update_lead_fields: {},
       client_name: null,
       oems: [],
     };
   }
 
-  const usedModel = model || DEFAULT_MODEL;
-
-  const messages = [
-    {
-      role: "system",
-      content: SYSTEM_PROMPT_V4,
-    },
-    ...history,
-  ];
-
-  logger.debug(
-    { ctx: CTX, model: usedModel, messagesCount: messages.length },
-    "LLM request",
-  );
-
-  let raw = "{}";
-
-  try {
-    const completion = await client.chat.completions.create({
-      model: usedModel,
-      messages,
-      temperature: 0.3,
-      response_format: { type: "json_object" },
-    });
-
-    raw = completion.choices?.[0]?.message?.content || "{}";
-
-    logger.debug({ ctx: CTX, raw }, "LLM raw response");
-
-    let parsed = {};
-    try {
-      parsed = JSON.parse(raw);
-    } catch (e) {
-      logger.warn(
-        { ctx: CTX, error: e?.message, raw },
-        "Не удалось распарсить JSON, fallback",
-      );
-      return fallbackResponse();
-    }
-
-    return normalize(parsed);
-  } catch (err) {
-    logger.error(
-      { ctx: CTX, message: err?.message, name: err?.name },
-      "Ошибка OpenAI",
-    );
-    return fallbackResponse();
-  }
-}
-
-// ---- НОРМАЛИЗАЦИЯ ОТВЕТА ----
-
-/**
- * Нормализация ответа LLM к единому контракту LLMFunnelResponse.
- *
- * @param {any} r
- * @returns {LLMFunnelResponse}
- */
-function normalize(r) {
-  // Fallback-адаптер старого формата:
-  // { "response": { OEM: "строка" | { price_range: {...}, availability?: ... }, ... } }
+  // Поддержка старого формата (если когда-то использовали r.response)
   if (!r.action && !r.reply && r.response && typeof r.response === "object") {
     const lines = [];
 
@@ -563,9 +238,9 @@ function normalize(r) {
 
         if (typeof min === "number" && typeof max === "number") {
           lines.push(
-            `${oem} — цены от ${min.toLocaleString("ru-RU")} до ${max.toLocaleString(
+            `${oem} — цены от ${min.toLocaleString(
               "ru-RU",
-            )} ${currency}`,
+            )} до ${max.toLocaleString("ru-RU")} ${currency}`,
           );
         } else {
           lines.push(`${oem} — есть предложения.`);
@@ -584,25 +259,108 @@ function normalize(r) {
     r.oems = Array.isArray(r.oems) ? r.oems : Object.keys(r.response);
   }
 
+  const action = sanitizeAction(r.action);
+  const stage = sanitizeStage(r.stage);
+  const reply = normalizeReply(r.reply);
+  const update_lead_fields = normalizeUpdateLeadFields(r.update_lead_fields);
+  const oems = normalizeOems(r.oems);
+
+  const client_name =
+    typeof r.client_name === "string" && r.client_name.trim()
+      ? r.client_name.trim()
+      : null;
+
   return {
-    action: r.action || LLM_ACTIONS.REPLY,
-    reply: r.reply || "",
-    stage: r.stage || LLM_STAGES.NEW,
+    action,
+    reply,
+    stage,
     need_operator: !!r.need_operator,
-    update_lead_fields: r.update_lead_fields || {},
-    client_name: r.client_name || null,
-    oems: Array.isArray(r.oems) ? r.oems : [],
+    update_lead_fields,
+    client_name,
+    oems,
   };
 }
 
-function fallbackResponse() {
-  return {
-    action: LLM_ACTIONS.REPLY,
-    reply: "Что-то пошло не так. Я уже восстанавливаюсь.",
-    stage: LLM_STAGES.NEW,
-    need_operator: false,
-    update_lead_fields: {},
-    client_name: null,
-    oems: [],
-  };
+/**
+ * Вызов модели с историей сообщений.
+ *
+ * @param {{ history: Array<{role: "system"|"user"|"assistant", content: string}> }} param0
+ * @returns {Promise<LLMFunnelResponse>}
+ */
+export async function generateStructuredFunnelReply({ history }) {
+  const ctx = `${CTX}.generateStructuredFunnelReply`;
+
+  if (!openai) {
+    logger.warn({ ctx }, "OPENAI_API_KEY не задан, используем fallback-ответ");
+    return {
+      action: LLM_ACTIONS.REPLY,
+      reply:
+        "Извините, сейчас модуль LLM временно недоступен. Менеджер скоро подключится.",
+      stage: LLM_STAGES.NEW,
+      need_operator: true,
+      update_lead_fields: {},
+      client_name: null,
+      oems: [],
+    };
+  }
+
+  try {
+    const messages = [
+      { role: "system", content: SYSTEM_PROMPT },
+      ...(history || []),
+    ];
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages,
+      temperature: 0.2,
+      max_tokens: 512,
+    });
+
+    const content =
+      completion.choices?.[0]?.message?.content || "";
+
+    const parsed = extractJsonObject(content);
+
+    if (!parsed) {
+      logger.warn(
+        { ctx, content },
+        "Не удалось распарсить JSON от LLM, используем fallback",
+      );
+      return {
+        action: LLM_ACTIONS.REPLY,
+        reply:
+          "Сорри, сейчас временная ошибка. Уже восстанавливаюсь.",
+        stage: LLM_STAGES.NEW,
+        need_operator: false,
+        update_lead_fields: {},
+        client_name: null,
+        oems: [],
+      };
+    }
+
+    const normalized = normalizeLLMResponse(parsed);
+
+    logger.debug(
+      { ctx, normalized },
+      "LLM ответ успешно нормализован",
+    );
+
+    return normalized;
+  } catch (err) {
+    logger.error(
+      { ctx, error: err?.message, stack: err?.stack },
+      "Ошибка при вызове LLM",
+    );
+    return {
+      action: LLM_ACTIONS.REPLY,
+      reply:
+        "Сорри, сейчас временная ошибка. Уже восстанавливаюсь.",
+      stage: LLM_STAGES.NEW,
+      need_operator: false,
+      update_lead_fields: {},
+      client_name: null,
+      oems: [],
+    };
+  }
 }
