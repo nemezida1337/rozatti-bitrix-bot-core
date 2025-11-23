@@ -1,68 +1,67 @@
 // src/modules/crm/leads.js
-// Единая обёртка над CRM Bitrix24 для работы с лидами.
-//
-// Ожидаем клиент вида:
-//   const rest = makeBitrixClient(...);
-//   rest.call(method, params) -> Promise<any>
-//
-// Используется из handler_llm_manager.js через createLeadsApi(rest).
+// Единая обёртка над CRM Bitrix24 для работы с лидами + высокоуровневая
+// функция safeUpdateLeadAndContact, которая:
+//  - гарантирует наличие лида для диалога
+//  - обновляет поля лида по LLM-контракту
+//  - двигает лид по стадиям
+//  - синхронизирует Контакт (ФИО, телефон, адрес)
+//  - при необходимости записывает товары (product rows)
 
-/**
- * Маппинг наших внутренних стадий в STATUS_ID Bitrix.
- * Подкорректируешь под свою воронку (или вынесем в config/settings.json).
- *
- * Стандартные статусы по умолчанию:
- *   NEW        — новый лид
- *   IN_PROCESS — в работе
- *   CONVERTED  — успешно сконвертирован
- *   JUNK       — некачественный (мусор)
- */
-const STAGE_TO_STATUS_ID = {
-  NEW: "NEW",               // только пришёл
-  QUALIFY: "IN_PROCESS",    // квалификация
-  PRICING: "IN_PROCESS",    // отправлен подбор/цены
-  WAITING_CUSTOMER: "IN_PROCESS",
-  WON: "CONVERTED",         // успешно (можно конвертировать в сделку)
-  LOST: "JUNK",             // отказ/мусор
+import { crmSettings } from "../../../config/settings.crm.js";
+import { logger } from "../../core/logger.js";
+import { makeBitrixClient } from "../../core/bitrixClient.js";
+import { createContactService, parseFullName as parseFullNameStandalone } from "./contactService.js";
+
+const CTX = "crm/leads";
+
+// Маппинг наших внутренних стадий (LLM_STAGES) в STATUS_ID Bitrix.
+// Можно переопределить через crmSettings.stageToStatusId.
+const DEFAULT_STAGE_TO_STATUS_ID = {
+  NEW: "NEW",          // новый лид
+  PRICING: "IN_PROCESS",
+  CONTACT: "IN_PROCESS",
+  FINAL: "IN_PROCESS",
 };
 
+function getStageToStatusMap() {
+  const cfg = crmSettings?.stageToStatusId || {};
+  return { ...DEFAULT_STAGE_TO_STATUS_ID, ...cfg };
+}
+
+const STAGE_TO_STATUS_ID = getStageToStatusMap();
+
 /**
- * Сбор стандартных полей лида из данных сессии бота.
+ * Построить поля лида при первом создании из сессии.
  *
  * session:
- *   {
- *     name: "Иван",
- *     phone: "+79990001122",
- *     email: "user@example.com",
- *     lastQuery: "Нужны передние тормозные колодки на BMW",
- *     // ...
- *   }
- *
- * dialogMeta:
- *   {
- *     dialogId: "chat123",
- *     chatId: 123,
- *     source: "OPENLINES",
- *   }
+ *   - state.stage         — стадия воронки LLM
+ *   - state.client_name   — имя / ФИО клиента (по версии LLM)
+ *   - name                — полное ФИО (если уже есть)
+ *   - phone               — телефон
+ *   - address             — адрес доставки / ПВЗ
+ *   - lastQuery           — последний текст запроса
  */
-function buildLeadFieldsFromSession(session, dialogMeta = {}) {
-  const { name, phone, email, lastQuery } = session || {};
-  const { dialogId, source } = dialogMeta;
+export function buildLeadFieldsFromSession(session = {}, dialogMeta = {}) {
+  const name =
+    session.name ||
+    session.state?.client_name ||
+    "";
 
-  const commentsParts = [];
+  const phone = session.phone || null;
+  const address = session.address || null;
+  const COMMENTS = session.lastQuery || "";
 
-  if (lastQuery) commentsParts.push(`Запрос клиента: ${lastQuery}`);
-  if (dialogId) commentsParts.push(`Диалог: ${dialogId}`);
-  if (source) commentsParts.push(`Источник: ${source}`);
-
-  const COMMENTS = commentsParts.join("\n");
+  const SOURCE_ID =
+    dialogMeta.source ||
+    crmSettings?.sourceId ||
+    "OPENLINES";
 
   const fields = {
     TITLE: name
       ? `Запрос запчастей: ${name}`
       : "Запрос запчастей (бот)",
     NAME: name || "",
-    SOURCE_ID: source || "OPENLINES",
+    SOURCE_ID,
   };
 
   if (COMMENTS) {
@@ -70,7 +69,6 @@ function buildLeadFieldsFromSession(session, dialogMeta = {}) {
   }
 
   if (phone) {
-    // Bitrix ожидает массив мультиполей PHONE
     fields.PHONE = [
       {
         VALUE: phone,
@@ -79,13 +77,8 @@ function buildLeadFieldsFromSession(session, dialogMeta = {}) {
     ];
   }
 
-  if (email) {
-    fields.EMAIL = [
-      {
-        VALUE: email,
-        VALUE_TYPE: "WORK",
-      },
-    ];
+  if (address) {
+    fields.ADDRESS = address;
   }
 
   return fields;
@@ -96,6 +89,8 @@ function buildLeadFieldsFromSession(session, dialogMeta = {}) {
  *
  * picks — массив объектов формата:
  *   { idx, qty, item: { oem, offer, days, daysText, brand, name, priceNum } }
+ *
+ * (эту структуру можно формировать из второго ответа LLM по ABCP)
  */
 function buildProductRowsFromSelection(picks = []) {
   const rows = [];
@@ -105,42 +100,29 @@ function buildProductRowsFromSelection(picks = []) {
 
     const { oem, offer, brand, name, priceNum } = p.item;
 
-    let price = typeof priceNum === "number" && Number.isFinite(priceNum)
-      ? priceNum
-      : Number(String((offer && offer.price) ?? "").replace(",", "."));
+    let price =
+      typeof priceNum === "number" && Number.isFinite(priceNum)
+        ? priceNum
+        : Number(
+            String((offer && offer.price) ?? "").replace(",", "."),
+          );
 
     if (!Number.isFinite(price) || price <= 0) {
       continue;
     }
 
-    const brandTitle =
-      brand ||
-      (offer && (offer.brand || offer.maker || offer.manufacturer || offer.vendor)) ||
-      "";
-    const nameTitle =
+    const quantity = p.qty && Number(p.qty) > 0 ? Number(p.qty) : 1;
+
+    const productName =
       name ||
-      (offer &&
-        (offer.name ||
-          offer.detailName ||
-          offer.description ||
-          offer.displayName ||
-          offer.goodName)) ||
-      "";
-
-    const productNameParts = [];
-    if (oem) productNameParts.push(String(oem).trim());
-    if (brandTitle) productNameParts.push(String(brandTitle).trim());
-    if (nameTitle) productNameParts.push(String(nameTitle).trim());
-
-    const PRODUCT_NAME =
-      productNameParts.join(" ").trim() || String(oem || "Запчасть").trim();
-
-    const qty = Number(p.qty) > 0 ? Number(p.qty) : 1;
+      (brand && oem ? `${brand} ${oem}` : oem) ||
+      "Запчасть";
 
     rows.push({
-      PRODUCT_NAME,
-      PRICE: Math.round(price),
-      QUANTITY: qty,
+      PRODUCT_NAME: productName,
+      PRICE: price,
+      QUANTITY: quantity,
+      CURRENCY_ID: "RUB",
     });
   }
 
@@ -150,7 +132,7 @@ function buildProductRowsFromSelection(picks = []) {
 /**
  * Фабрика API для работы с лидами.
  *
- * @param {object} rest - клиент, у которого есть method call(method, params)
+ * @param {object} rest - клиент, у которого есть метод call(method, params)
  */
 export function createLeadsApi(rest) {
   if (!rest || typeof rest.call !== "function") {
@@ -159,7 +141,6 @@ export function createLeadsApi(rest) {
 
   /**
    * Создать лид по данным сессии.
-   * Сейчас используем crm.lead.add (надёжно и просто).
    */
   async function createLeadFromSession(session, dialogMeta = {}) {
     const fields = buildLeadFieldsFromSession(session, dialogMeta);
@@ -169,49 +150,40 @@ export function createLeadsApi(rest) {
 
     if (!leadId || Number.isNaN(leadId)) {
       throw new Error(
-        `[crm/leads] crm.lead.add returned invalid id: ${JSON.stringify(
-          result
-        )}`
+        `[crm/leads] crm.lead.add вернул некорректный id: ${result}`,
       );
     }
 
-    console.info("[crm/leads] Lead created:", leadId);
+    logger.info(
+      { ctx: CTX, leadId, dialogId: dialogMeta.dialogId },
+      "Лид создан",
+    );
+
     return leadId;
   }
 
   /**
-   * Обновление лида.
-   * fields — объект полей, который пойдёт напрямую в crm.lead.update.
-   * ВАЖНО: здесь мы не "домысливаем" структуру полей, ожидаем корректный формат.
+   * Частичное обновление лида.
    */
-  async function updateLead(leadId, fields) {
+  async function updateLead(leadId, fields = {}) {
     if (!leadId) {
-      console.warn("[crm/leads] updateLead called without leadId");
-      return false;
+      throw new Error("[crm/leads] updateLead: leadId is required");
     }
-    if (!fields || Object.keys(fields).length === 0) {
+    if (!fields || !Object.keys(fields).length) {
       return true;
     }
 
-    const res = await rest.call("crm.lead.update", {
+    await rest.call("crm.lead.update", {
       id: leadId,
       fields,
     });
 
-    const ok = !!res;
-    if (!ok) {
-      console.warn(
-        "[crm/leads] crm.lead.update returned falsy/zero result:",
-        res
-      );
-    }
-
-    return ok;
+    logger.info({ ctx: CTX, leadId, fields }, "Лид обновлён");
+    return true;
   }
 
   /**
-   * Установить стадию лида по нашему stage-коду.
-   * stage: "NEW" | "QUALIFY" | "PRICING" | "WAITING_CUSTOMER" | "WON" | "LOST"
+   * Установить статус лида по стадии LLM.
    */
   async function setLeadStage(leadId, stage) {
     if (!leadId || !stage) {
@@ -220,7 +192,10 @@ export function createLeadsApi(rest) {
 
     const statusId = STAGE_TO_STATUS_ID[stage];
     if (!statusId) {
-      console.warn("[crm/leads] Unknown stage, skip setLeadStage:", stage);
+      logger.warn(
+        { ctx: CTX, leadId, stage },
+        "[crm/leads] Unknown stage, skip setLeadStage",
+      );
       return false;
     }
 
@@ -228,8 +203,7 @@ export function createLeadsApi(rest) {
   }
 
   /**
-   * Добавить комментарий к лиду (через поле COMMENTS).
-   * Для простоты вытаскиваем текущий COMMENTS и дописываем текст.
+   * Добавить комментарий к лиду (через поле COMMENTS — простой вариант).
    */
   async function appendComment(leadId, comment) {
     if (!leadId || !comment) return false;
@@ -238,7 +212,10 @@ export function createLeadsApi(rest) {
     try {
       lead = await rest.call("crm.lead.get", { id: leadId });
     } catch (e) {
-      console.error("[crm/leads] crm.lead.get failed:", e);
+      logger.warn(
+        { ctx: CTX, leadId, error: String(e) },
+        "[crm/leads] crm.lead.get failed в appendComment",
+      );
       return false;
     }
 
@@ -250,62 +227,49 @@ export function createLeadsApi(rest) {
 
   /**
    * Установить product rows для лида (crm.lead.productrows.set).
-   * rows — массив объектов вида { PRODUCT_NAME, PRICE, QUANTITY, ... }.
+   * rows — массив объектов Bitrix24:
+   *   [{ PRODUCT_NAME, PRICE, QUANTITY, CURRENCY_ID }, ...]
    */
-  async function setProductRows(leadId, rows) {
+  async function setProductRows(leadId, rows = []) {
     if (!leadId) {
-      console.warn("[crm/leads] setProductRows called without leadId");
-      return false;
-    }
-    if (!rows || rows.length === 0) {
-      return true;
+      throw new Error("[crm/leads] setProductRows: leadId is required");
     }
 
-    const res = await rest.call("crm.lead.productrows.set", {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    await rest.call("crm.lead.productrows.set", {
       id: leadId,
-      rows,
+      rows: safeRows,
     });
 
-    const ok = !!res;
-    if (!ok) {
-      console.warn(
-        "[crm/leads] crm.lead.productrows.set returned falsy/zero result:",
-        res
-      );
-    }
-
-    return ok;
+    logger.info(
+      { ctx: CTX, leadId, rowsCount: safeRows.length },
+      "Установлены product rows для лида",
+    );
   }
 
   /**
-   * Установить product rows по результату выбора ABCP.
-   * picks — массив из tryHandleSelectionMessage.
+   * Установить product rows по выбранным офферам ABCP (попозже LLM будет
+   * отдавать picks, готовые к конвертации).
    */
-  async function setProductRowsFromSelection(leadId, picks) {
-    const rows = buildProductRowsFromSelection(picks || []);
+  async function setProductRowsFromSelection(leadId, picks = []) {
+    const rows = buildProductRowsFromSelection(picks);
     if (!rows.length) {
-      console.info(
-        "[crm/leads] setProductRowsFromSelection: no rows built from picks"
+      logger.debug(
+        { ctx: CTX, leadId },
+        "setProductRowsFromSelection: нет валидных строк",
       );
-      return false;
+      return;
     }
-    return setProductRows(leadId, rows);
+
+    await setProductRows(leadId, rows);
   }
 
   /**
-   * Гарантировать, что у сессии есть leadId:
-   *  - если уже есть -> вернуть его;
-   *  - если нет -> создать новый лид и записать в session.leadId.
-   *
-   * В дальнейшем можно добавить:
-   *  - поиск по телефону (чтобы не плодить дубликаты),
-   *  - поиск по кастомному UF_ полю (например, по dialogId).
+   * Гарантировать наличие лида для диалога.
+   * Если в session.leadId уже есть id — просто вернуть его.
+   * Иначе создать новый лид и записать id в session.leadId/leadCreated.
    */
-  async function ensureLeadForDialog(session, dialogMeta = {}) {
-    if (!session) {
-      throw new Error("[crm/leads] ensureLeadForDialog: session is required");
-    }
-
+  async function ensureLeadForDialog(session = {}, dialogMeta = {}) {
     if (session.leadId) {
       return session.leadId;
     }
@@ -330,4 +294,175 @@ export function createLeadsApi(rest) {
     appendComment,
     ensureLeadForDialog,
   };
+}
+
+/**
+ * Высокоуровневый CRM-слой:
+ * безопасное обновление лида и контакта по JSON-контракту LLM.
+ *
+ * Параметры:
+ *  - portal          — домен портала Bitrix
+ *  - dialogId        — ID диалога в ОЛ (для связи лида с чатом)
+ *  - session         — объект сессии (будет обновлён и потом сохранён handler'ом)
+ *  - llm             — strict JSON-ответ LLM (action, stage, oems, update_lead_fields, client_name, ...)
+ *  - lastUserMessage — текст последнего сообщения клиента (для COMMENTS)
+ */
+export async function safeUpdateLeadAndContact({
+  portal,
+  dialogId,
+  session,
+  llm,
+  lastUserMessage,
+}) {
+  const ctx = `${CTX}.safeUpdateLeadAndContact`;
+
+  try {
+    if (!portal || !dialogId || !session || !llm) {
+      logger.warn(
+        { ctx, portal, dialogId },
+        "safeUpdateLeadAndContact: missing args",
+      );
+      return;
+    }
+
+    // 1) Bitrix REST клиент + CRM-API + ContactService
+    const rest = makeBitrixClient({ domain: portal });
+    const leads = createLeadsApi(rest);
+    const contacts = createContactService(rest);
+
+    // 2) Обновляем сессию по данным LLM (для следующего шага и для buildLeadFieldsFromSession)
+    const ufFields = llm.update_lead_fields || {};
+
+    if (!session.state) {
+      session.state = {
+        stage: "NEW",
+        client_name: null,
+        last_reply: null,
+      };
+    }
+
+    if (ufFields.NAME) {
+      session.name = ufFields.NAME;
+      session.state.client_name = ufFields.NAME;
+    } else if (llm.client_name) {
+      session.name = llm.client_name;
+      session.state.client_name = llm.client_name;
+    }
+
+    if (ufFields.PHONE && !session.phone) {
+      session.phone = ufFields.PHONE;
+    }
+
+    if (ufFields.ADDRESS && !session.address) {
+      session.address = ufFields.ADDRESS;
+    }
+
+    if (lastUserMessage) {
+      session.lastQuery = lastUserMessage;
+    }
+
+    // 3) Гарантируем наличие лида
+    const dialogMeta = {
+      dialogId,
+      source: crmSettings?.sourceId || "OPENLINES",
+    };
+
+    const leadId = await leads.ensureLeadForDialog(session, dialogMeta);
+    logger.info({ ctx, leadId }, "ensureLeadForDialog ok");
+
+    // 4) Собираем поля для обновления лида
+    const fields = {};
+
+    // NAME / LAST_NAME / SECOND_NAME из полного ФИО
+    const fullName =
+      session.name ||
+      ufFields.NAME ||
+      llm.client_name ||
+      session.state?.client_name ||
+      "";
+
+    if (fullName) {
+      const { firstName, lastName, middleName } = parseFullNameStandalone(fullName);
+
+      if (firstName) fields.NAME = firstName;
+      if (lastName) fields.LAST_NAME = lastName;
+      if (middleName) fields.SECOND_NAME = middleName;
+    }
+
+    // PHONE — нормализуем через ContactService
+    const phoneFromLLM =
+      ufFields.PHONE ||
+      ufFields.phone ||
+      session.phone ||
+      null;
+
+    const normalizedPhone = contacts.normalizePhone(phoneFromLLM);
+    if (normalizedPhone) {
+      fields.PHONE = [
+        {
+          VALUE: normalizedPhone,
+          VALUE_TYPE: "WORK",
+        },
+      ];
+    }
+
+    // ADDRESS — строка адреса / ПВЗ СДЭК
+    const addressFromLLM =
+      ufFields.ADDRESS ||
+      ufFields.address ||
+      session.address ||
+      null;
+
+    if (addressFromLLM) {
+      fields.ADDRESS = addressFromLLM;
+    }
+
+    // COMMENTS: либо из LLM, либо краткий лог запроса
+    if (ufFields.COMMENTS) {
+      fields.COMMENTS = ufFields.COMMENTS;
+    } else if (lastUserMessage) {
+      fields.COMMENTS = `Запрос клиента из чата: ${lastUserMessage}`;
+    }
+
+    // OEM → кастомное поле UF_CRM_xxx (если настроено)
+    const oems = Array.isArray(llm.oems) ? llm.oems : [];
+    const oemFieldCode = crmSettings?.leadFields?.OEM;
+
+    if (oemFieldCode && oems.length > 0) {
+      fields[oemFieldCode] = oems.join(", ");
+    }
+
+    // 5) Обновляем лид, если есть что обновлять
+    if (Object.keys(fields).length > 0) {
+      await leads.updateLead(leadId, fields);
+    } else {
+      logger.debug({ ctx, leadId }, "Нет полей для обновления лида");
+    }
+
+    // 6) Двигаем лид по стадиям (если LLM вернул stage)
+    if (llm.stage) {
+      await leads.setLeadStage(leadId, llm.stage);
+    }
+
+    // 7) Product rows (опционально, если LLM уже умеет отдавать product_rows)
+    if (Array.isArray(llm.product_rows) && llm.product_rows.length > 0) {
+      await leads.setProductRows(leadId, llm.product_rows);
+    } else if (Array.isArray(llm.product_picks) && llm.product_picks.length > 0) {
+      // На будущее: если LLM будет отдавать picks по ABCP — используем их
+      await leads.setProductRowsFromSelection(leadId, llm.product_picks);
+    }
+
+    // 8) Синхронизируем Контакт по данным лида/сессии
+    await contacts.syncContactFromLead({
+      ctx,
+      leadId,
+      session,
+      fields,
+    });
+  } catch (err) {
+    logger.error(
+      { ctx, error: err?.message, stack: err?.stack },
+      "Ошибка safeUpdateLeadAndContact",
+    );
+  }
 }

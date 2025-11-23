@@ -12,6 +12,15 @@ export const crmSettings = {
     OEM: "UF_CRM_1762873310878",
   },
 
+  // Маппинг стадий LLM-воронки в STATUS_ID Bitrix.
+  // При желании можно поменять на свои статусы/воронки.
+  stageToStatusId: {
+    NEW: "NEW",          // новый лид
+    PRICING: "IN_PROCESS",
+    CONTACT: "IN_PROCESS",
+    FINAL: "IN_PROCESS",
+  },
+
   // На будущее: сюда можно добавить коды полей "Причина отказа", и т.п.
   // leadFields: {
   //   OEM: "UF_CRM_1762873310878",
