@@ -1,147 +1,240 @@
-// src/modules/llm/llmFunnelEngine.js (v5, фикс логгера)
-// НОВЫЙ LLM PIPELINE
-// — нормализованная история
-// — структурированный контекст
-// — strict JSON ответ
-// — поддержка action (abcp_lookup, ask_name, ask_phone, smalltalk, …)
-// — работает вместе с openaiClient.js (SYSTEM_PROMPT_V4)
+// src/modules/llm/llmFunnelEngine.js
+//
+// Оркестратор LLM-воронки:
+//  - формирует контекст (историю, состояние сессии, ABCP)
+//  - вызывает generateStructuredFunnelReply
+//  - возвращает LLMFunnelResponse, уже нормализованный в openaiClient.js
+//
+// Экспорт:
+//  - prepareFunnelContext({ session, msg, injectedABCP? })
+//  - runFunnelLLM(context)
 
 import { logger } from "../../core/logger.js";
+import {
+  generateStructuredFunnelReply,
+  LLM_ACTIONS,
+  LLM_STAGES,
+} from "./openaiClient.js";
 
-import { generateStructuredFunnelReply } from "./openaiClient.js";
-
-const CTX = "llmFunnel";
-
-/**
- * ПОДГОТОВКА КОНТЕКСТА ДЛЯ LLM
- *
- * session = {
- *   state: { stage, client_name, last_reply },
- *   abcp: { OEM: { offers: [.] } },   // сейчас храним только для истории / отладки
- *   history: [{ role, text }],
- * }
- *
- * msg = входящее сообщение
- */
-export async function prepareFunnelContext({ session, msg }) {
-  const context = {
-    session_state: {
-      stage: session?.state?.stage || "NEW",
-      client_name: session?.state?.client_name || null,
-      last_reply: session?.state?.last_reply || null,
-    },
-    // ABCP-данные из сессии сюда больше НЕ подсовываем в LLM
-    // (обнулим ниже через abcpPayload)
-    abcp_data: session?.abcp || {},
-    message: {
-      text: msg.text || "",
-      is_forwarded: msg.isForwarded || false,
-    },
-    history: compressHistory(session?.history || []),
-  };
-
-  logger.debug({ ctx: CTX, context }, "LLM context prepared");
-  return context;
-}
+const CTX = "llm/funnelEngine";
 
 /**
- * История: сокращаем, нормализуем.
- * Берём последние 6 сообщений (3 пары user/assistant).
- */
-function compressHistory(history) {
-  if (!Array.isArray(history) || !history.length) return [];
-  const last = history.slice(-6);
-
-  return last.map((m) => ({
-    role: m.role === "assistant" ? "assistant" : "user",
-    content: m.text || "",
-  }));
-}
-
-/**
- * ЗАПУСК LLM-ФУННЕЛА
+ * Подготовить контекст для LLM:
+ *  - история диалога
+ *  - состояние сессии
+ *  - последняя реплика пользователя
+ *  - (опционально) данные ABCP
  *
- * context:
- *  - session_state
- *  - abcp_data      — данные из сессии (теперь только для логов, НЕ идёт в LLM)
- *  - injectedABCP   — свежий результат ABCP (handler_llm_manager подкидывает на 2-м проходе)
- *  - message
- *  - history
+ * @param {Object} params
+ * @param {Object} params.session
+ * @param {Object} params.msg
+ * @param {Object} [params.injectedABCP]
  */
-export async function runFunnelLLM(context) {
-  try {
-    const messages = [];
+export function prepareFunnelContext({ session, msg, injectedABCP }) {
+  const history = [];
 
-    // SYSTEM-PROMPT основной лежит в openaiClient.js
-    // Здесь даём только техническую подсказку.
-    messages.push({
-      role: "system",
-      content:
-        "Ты — структурный LLM-двигатель для автозапчастей Rozatti. Ответ всегда в формате одного JSON-объекта.",
-    });
-
-    // История диалога
-    for (const h of context.history || []) {
-      messages.push({
+  // Восстанавливаем историю диалога из session.history, если есть
+  if (Array.isArray(session?.history)) {
+    for (const h of session.history) {
+      if (!h || typeof h.text !== "string") continue;
+      if (h.role !== "user" && h.role !== "assistant") continue;
+      history.push({
         role: h.role,
-        content: h.content,
+        content: h.text,
       });
     }
+  }
 
-    // СВЕЖИЕ данные ABCP, если их подкинули из handler'а.
-    // ВАЖНО: мы больше НЕ используем context.abcp_data,
-    // чтобы LLM не могла опираться на старые цены.
-    const abcpPayload = context.injectedABCP || {};
-
-    // Последнее сообщение пользователя (как единый JSON)
-    messages.push({
+  // Текущий запрос пользователя
+  if (msg?.text) {
+    history.push({
       role: "user",
-      content: JSON.stringify({
-        type: "user_message",
-        text: context.message?.text || "",
-        is_forwarded: context.message?.is_forwarded || false,
-        session_state: context.session_state || {},
-        abcp_data: abcpPayload,
-      }),
+      content: msg.text,
+    });
+  }
+
+  const funnelContext = {
+    history,
+    session: session || {},
+    msg: msg || {},
+    abcp: injectedABCP ?? session?.abcp ?? null,
+  };
+
+  return funnelContext;
+}
+
+/**
+ * Основной вход в LLM-воронку.
+ *
+ * @param {Object} context
+ * @param {Array<{role: string, content: string}>} context.history
+ * @param {Object} context.session
+ * @param {Object} context.msg
+ * @param {Object|null} [context.abcp]
+ */
+export async function runFunnelLLM(context) {
+  const ctx = `${CTX}.runFunnelLLM`;
+
+  try {
+    const { history, session, msg, abcp } = context;
+
+    const technicalIntro = buildTechnicalIntro({ session, msg, abcp });
+
+    const messages = [
+      ...technicalIntro,
+      ...(history || []),
+    ];
+
+    const result = await generateStructuredFunnelReply({
+      history: messages,
     });
 
-    logger.debug(
-      { ctx: CTX, messagesCount: messages.length },
-      "LLM messages",
-    );
-
-    const result = await generateStructuredFunnelReply({ history: messages });
-
-    return normalizeLLMResult(result);
+    // generateStructuredFunnelReply уже гарантирует контракт LLMFunnelResponse
+    return result;
   } catch (err) {
-    logger.error({ ctx: CTX, err }, "Ошибка LLM");
+    logger.error(
+      { ctx, error: err?.message, stack: err?.stack },
+      "Ошибка в runFunnelLLM, возвращаем fallback",
+    );
     return fallback();
   }
 }
 
 /**
- * Нормализация ответа LLM.
+ * Техническая "подводка" для LLM:
+ *  - состояние воронки
+ *  - известные данные клиента
+ *  - сводка по ABCP (если есть)
  */
-function normalizeLLMResult(r) {
-  return {
-    action: r?.action || "reply",
-    reply: r?.reply || "",
-    stage: r?.stage || "NEW",
-    need_operator: !!r?.need_operator,
-    update_lead_fields: r?.update_lead_fields || {},
-    client_name: r?.client_name || null,
-    oems: Array.isArray(r?.oems) ? r.oems : [],
-  };
+function buildTechnicalIntro({ session, msg, abcp }) {
+  const blocks = [];
+
+  const state = session?.state || {};
+  const stage = state.stage || LLM_STAGES.NEW;
+
+  const clientName =
+    session?.name ||
+    state?.client_name ||
+    null;
+
+  const phone = session?.phone || null;
+  const address = session?.address || null;
+
+  const introLines = [];
+
+  introLines.push(
+    `Текущая стадия воронки: ${stage}.`,
+  );
+
+  if (clientName) {
+    introLines.push(`Имя клиента (по версии системы): ${clientName}.`);
+  } else {
+    introLines.push("Имя клиента пока неизвестно.");
+  }
+
+  if (phone) {
+    introLines.push(`Телефон клиента (по версии системы): ${phone}.`);
+  } else {
+    introLines.push("Телефон клиента пока неизвестен.");
+  }
+
+  if (address) {
+    introLines.push(`Адрес/ПВЗ клиента: ${address}.`);
+  } else {
+    introLines.push("Адрес клиента пока неизвестен.");
+  }
+
+  if (Array.isArray(session?.oems) && session.oems.length > 0) {
+    introLines.push(
+      `Ранее распознаны OEM-коды клиента: ${session.oems.join(
+        ", ",
+      )}.`,
+    );
+  }
+
+  const abcpSummary = buildAbcpSummary(abcp);
+  if (abcpSummary) {
+    introLines.push(
+      "Краткое резюме по уже найденным предложениям ABCP:",
+    );
+    introLines.push(abcpSummary);
+  }
+
+  if (msg?.text) {
+    introLines.push(
+      `Текущее сообщение клиента: "${msg.text}".`,
+    );
+  }
+
+  blocks.push({
+    role: "system",
+    content: introLines.join("\n"),
+  });
+
+  return blocks;
 }
 
 /**
- * Fallback на случай краша LLM.
+ * Краткая сводка по ABCP для LLM.
+ * Мы не даём всю структуру, только сжатую текстовую выжимку.
+ */
+function buildAbcpSummary(abcp) {
+  if (!abcp || typeof abcp !== "object") return "";
+
+  const lines = [];
+
+  for (const [oem, entry] of Object.entries(abcp)) {
+    if (!entry || typeof entry !== "object") continue;
+
+    const offers = Array.isArray(entry.offers)
+      ? entry.offers
+      : [];
+
+    if (!offers.length) {
+      lines.push(`По OEM ${oem} пока нет актуальных предложений.`);
+      continue;
+    }
+
+    const best = offers[0];
+
+    const brand = best.brand || "";
+    const name = best.name || "";
+    const price = best.priceNum || best.price || null;
+    const daysText = best.daysText || "";
+    const minDays = best.minDays;
+    const maxDays = best.maxDays;
+
+    let line = `OEM ${oem}: лучший вариант`;
+
+    if (brand) line += ` бренд ${brand}`;
+    if (name) line += `, ${name}`;
+    if (typeof price === "number") {
+      line += `, цена около ${price} руб.`;
+    }
+    if (daysText) {
+      line += `, срок: ${daysText}`;
+    } else if (
+      typeof minDays === "number" &&
+      typeof maxDays === "number"
+    ) {
+      line += `, срок: от ${minDays} до ${maxDays} дней.`;
+    }
+
+    lines.push(line);
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Fallback-ответ, если что-то пошло совсем не так.
  */
 function fallback() {
   return {
-    action: "reply",
-    reply: "Сорри, сейчас временная ошибка. Уже восстанавливаюсь.",
-    stage: "NEW",
+    action: LLM_ACTIONS.REPLY,
+    reply:
+      "Сорри, сейчас временная ошибка. Уже восстанавливаюсь.",
+    stage: LLM_STAGES.NEW,
     need_operator: false,
     update_lead_fields: {},
     client_name: null,
