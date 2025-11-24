@@ -1,4 +1,3 @@
-// src/modules/llm/openaiClient.js
 //
 // Единая обёртка для работы с LLM в Rozatti Bot Core.
 // Задачи:
@@ -10,6 +9,8 @@
 // Экспорт:
 //  - LLM_ACTIONS
 //  - LLM_STAGES
+//  - normalizeLLMResponse
+//  - validateLLMFunnelResponse
 //  - generateStructuredFunnelReply({ history })
 
 import OpenAI from "openai";
@@ -55,6 +56,8 @@ export const LLM_STAGES = {
  * @property {Object<string, any>} update_lead_fields - словарь полей лида для Bitrix24
  * @property {string|null} client_name  - полное имя клиента (ФИО)
  * @property {string[]} oems            - массив OEM-кодов (в верхнем регистре)
+ * @property {Array<Object>} [product_rows]  - готовые product rows Bitrix24
+ * @property {Array<Object>} [product_picks] - picks по ABCP (сырой выбор для маппинга в product rows)
  */
 
 /**
@@ -68,7 +71,7 @@ const SYSTEM_PROMPT = `
 - Отвечай строго ОДНИМ JSON-объектом без всякого текста вокруг.
 - Никаких комментариев, пояснений, Markdown и текста вне JSON.
 - Все строки в JSON — в кавычках.
-- Не используй \`undefined\`, функции, даты, только обычные JSON-типы.
+- Не используй undefined, функции, даты, только обычные JSON-типы.
 
 ФОРМАТ ОТВЕТА (JSON-ОБЪЕКТ):
 
@@ -86,7 +89,30 @@ const SYSTEM_PROMPT = `
     // плюс UF_CRM_* при необходимости
   },
   "client_name": "полное ФИО клиента или null",
-  "oems": ["OEM1", "OEM2"]
+  "oems": ["OEM1", "OEM2"],
+
+  // опционально (на будущее, использовать только когда уверена):
+  "product_rows": [
+    {
+      "PRODUCT_NAME": "Название позиции",
+      "PRICE": 12345.67,
+      "QUANTITY": 1,
+      "CURRENCY_ID": "RUB"
+    }
+  ],
+  "product_picks": [
+    {
+      "idx": 0,
+      "qty": 1,
+      "item": {
+        "oem": "A0000000000",
+        "brand": "MB",
+        "name": "Название детали",
+        "priceNum": 12345.67,
+        "daysText": "до 7 раб.дн."
+      }
+    }
+  ]
 }
 
 ОСОБЕННОСТИ:
@@ -197,6 +223,17 @@ function normalizeUpdateLeadFields(raw) {
 }
 
 /**
+ * Нормализация product_rows / product_picks:
+ *  - только массив объектов (без массивов внутри)
+ */
+function normalizeObjectArray(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (v) => v && typeof v === "object" && !Array.isArray(v),
+  );
+}
+
+/**
  * Нормализация строки ответа.
  */
 function normalizeReply(raw) {
@@ -205,12 +242,27 @@ function normalizeReply(raw) {
 }
 
 /**
+ * Нормализация булевого флага (need_operator и подобное).
+ * Принимаем true/false, 1/0, "true"/"false", "yes"/"no".
+ * Всё остальное приводим к false для безопасности.
+ */
+function normalizeBool(raw) {
+  if (raw === true || raw === "true" || raw === "yes" || raw === 1 || raw === "1") {
+    return true;
+  }
+  if (raw === false || raw === "false" || raw === "no" || raw === 0 || raw === "0") {
+    return false;
+  }
+  return false;
+}
+
+/**
  * Приведение произвольного объекта r к LLMFunnelResponse.
  *
  * @param {any} r
  * @returns {LLMFunnelResponse}
  */
-function normalizeLLMResponse(r) {
+export function normalizeLLMResponse(r) {
   if (!r || typeof r !== "object") {
     return {
       action: LLM_ACTIONS.REPLY,
@@ -220,6 +272,8 @@ function normalizeLLMResponse(r) {
       update_lead_fields: {},
       client_name: null,
       oems: [],
+      product_rows: [],
+      product_picks: [],
     };
   }
 
@@ -253,7 +307,7 @@ function normalizeLLMResponse(r) {
     r.reply = lines.join("\n");
     r.action = LLM_ACTIONS.REPLY;
     r.stage = r.stage || LLM_STAGES.PRICING;
-    r.need_operator = !!r.need_operator;
+    r.need_operator = normalizeBool(r.need_operator);
     r.update_lead_fields = r.update_lead_fields || {};
     r.client_name = r.client_name || null;
     r.oems = Array.isArray(r.oems) ? r.oems : Object.keys(r.response);
@@ -270,14 +324,52 @@ function normalizeLLMResponse(r) {
       ? r.client_name.trim()
       : null;
 
+  const product_rows = normalizeObjectArray(r.product_rows);
+  const product_picks = normalizeObjectArray(r.product_picks);
+
   return {
     action,
     reply,
     stage,
-    need_operator: !!r.need_operator,
+    need_operator: normalizeBool(r.need_operator),
     update_lead_fields,
     client_name,
     oems,
+    product_rows,
+    product_picks,
+  };
+}
+
+/**
+ * Лёгкий валидатор контракта LLM.
+ * Используется для тестов и при необходимости дополнительной проверки.
+ *
+ * @param {any} raw
+ * @returns {{ ok: boolean, value: LLMFunnelResponse, errors: string[] }}
+ */
+export function validateLLMFunnelResponse(raw) {
+  const errors = [];
+
+  if (!raw || typeof raw !== "object") {
+    errors.push("Response is not an object");
+  } else {
+    if (!raw.action) {
+      errors.push("Missing field: action");
+    }
+    if (!raw.stage) {
+      errors.push("Missing field: stage");
+    }
+    if (!raw.reply) {
+      errors.push("Missing field: reply");
+    }
+  }
+
+  const value = normalizeLLMResponse(raw || {});
+
+  return {
+    ok: errors.length === 0,
+    value,
+    errors,
   };
 }
 
@@ -301,6 +393,8 @@ export async function generateStructuredFunnelReply({ history }) {
       update_lead_fields: {},
       client_name: null,
       oems: [],
+      product_rows: [],
+      product_picks: [],
     };
   }
 
@@ -336,6 +430,8 @@ export async function generateStructuredFunnelReply({ history }) {
         update_lead_fields: {},
         client_name: null,
         oems: [],
+        product_rows: [],
+        product_picks: [],
       };
     }
 
@@ -361,6 +457,8 @@ export async function generateStructuredFunnelReply({ history }) {
       update_lead_fields: {},
       client_name: null,
       oems: [],
+      product_rows: [],
+      product_picks: [],
     };
   }
 }

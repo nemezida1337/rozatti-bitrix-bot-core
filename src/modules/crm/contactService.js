@@ -47,6 +47,15 @@ export function parseFullName(full) {
  * Фабрика ContactService.
  *
  * @param {object} rest - Bitrix REST клиент (makeBitrixClient)
+ * @returns {{
+ *   normalizePhone: (phoneRaw: string) => string | null,
+ *   parseFullName: (full: string) => { firstName: string, lastName: string, middleName: string },
+ *   findContactByPhone: (phoneRaw: string) => Promise<{ phone: string | null, contact: any }>,
+ *   createContact: (args: { fullName?: string, phone?: string | null, address?: string | null }) => Promise<number | null>,
+ *   updateContact: (args: { contactId: number, fullName?: string, phone?: string | null, address?: string | null }) => Promise<boolean>,
+ *   linkContactToLead: (args: { leadId: number, contactId: number }) => Promise<boolean>,
+ *   syncContactFromLead: (args: { ctx?: string, leadId: number, session: any, fields: any }) => Promise<void>
+ * }}
  */
 export function createContactService(rest) {
   if (!rest || typeof rest.call !== "function") {
