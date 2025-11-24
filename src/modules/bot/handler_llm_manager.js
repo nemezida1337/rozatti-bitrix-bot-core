@@ -3,6 +3,7 @@
 // Вся бизнес-логика — в LLM + модулях (ABCP, CRM, OL)
 
 import { logger } from "../../core/logger.js";
+import { eventBus } from "../../core/eventBus.js";
 import { normalizeIncomingMessage } from "../../core/messageModel.js";
 import { safeUpdateLeadAndContact } from "../crm/leads.js";
 import { searchManyOEMs } from "../external/pricing/abcp.js";
@@ -109,14 +110,30 @@ export async function processIncomingBitrixMessage(req, res) {
     const session =
       getSession(msg.portal, msg.dialogId) || createEmptySession();
 
+    // EventBus: входящее сообщение пользователя
+    eventBus.emit("USER_MESSAGE", {
+      portal: msg.portal,
+      dialogId: msg.dialogId,
+      text: msg.text,
+      session,
+    });
+
     // 1) Подготовка контекста для LLM
     const baseContext = await prepareFunnelContext({ session, msg });
 
     //
     // 2) LLM → strict JSON (первый проход)
     //
+    /** @type {import("../llm/openaiClient.js").LLMFunnelResponse} */
     let llm = await runFunnelLLM(baseContext);
     logger.debug({ ctx: CTX, llm }, "LLM structured JSON (pass 1)");
+
+    eventBus.emit("LLM_RESPONSE", {
+      portal: msg.portal,
+      dialogId: msg.dialogId,
+      pass: 1,
+      llm,
+    });
 
     //
     // 3) ABCP (ТОЛЬКО если LLM запросил abcp_lookup по OEM)
@@ -132,6 +149,13 @@ export async function processIncomingBitrixMessage(req, res) {
     if (needABCP) {
       abcpResult = await safeDoABCP(llm.oems);
 
+      eventBus.emit("ABCP_RESULT", {
+        portal: msg.portal,
+        dialogId: msg.dialogId,
+        oems: llm.oems,
+        result: abcpResult,
+      });
+
       // 3.1) Второй проход LLM с инъекцией ABCP
       const contextWithABCP = {
         ...baseContext,
@@ -140,6 +164,13 @@ export async function processIncomingBitrixMessage(req, res) {
 
       llm = await runFunnelLLM(contextWithABCP);
       logger.debug({ ctx: CTX, llm }, "LLM structured JSON (pass 2)");
+
+      eventBus.emit("LLM_RESPONSE", {
+        portal: msg.portal,
+        dialogId: msg.dialogId,
+        pass: 2,
+        llm,
+      });
     }
 
     //
@@ -149,7 +180,9 @@ export async function processIncomingBitrixMessage(req, res) {
       llm &&
       ((llm.update_lead_fields &&
         Object.keys(llm.update_lead_fields).length > 0) ||
-        (Array.isArray(llm.oems) && llm.oems.length > 0))
+        (Array.isArray(llm.oems) && llm.oems.length > 0) ||
+        (Array.isArray(llm.product_rows) && llm.product_rows.length > 0) ||
+        (Array.isArray(llm.product_picks) && llm.product_picks.length > 0))
     ) {
       await safeUpdateLeadAndContact({
         portal: msg.portal,
@@ -165,6 +198,12 @@ export async function processIncomingBitrixMessage(req, res) {
     //
     if (llm.reply) {
       await sendOL(msg.portal, msg.dialogId, llm.reply);
+
+      eventBus.emit("OL_SEND", {
+        portal: msg.portal,
+        dialogId: msg.dialogId,
+        text: llm.reply,
+      });
     }
 
     //
@@ -187,6 +226,12 @@ export async function processIncomingBitrixMessage(req, res) {
     };
 
     saveSession(msg.portal, msg.dialogId, newSession);
+
+    eventBus.emit("SESSION_UPDATED", {
+      portal: msg.portal,
+      dialogId: msg.dialogId,
+      session: newSession,
+    });
 
     safeReply(res);
   } catch (err) {

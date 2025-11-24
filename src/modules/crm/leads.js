@@ -6,9 +6,11 @@
 //  - двигает лид по стадиям
 //  - синхронизирует Контакт (ФИО, телефон, адрес)
 //  - при необходимости записывает товары (product rows)
+//  - пишет COMMENTS-лог (структурированная строка по шагу диалога)
 
 import { crmSettings } from "../../../config/settings.crm.js";
 import { logger } from "../../core/logger.js";
+import { eventBus } from "../../core/eventBus.js";
 import { makeBitrixClient } from "../../core/bitrixClient.js";
 import { createContactService, parseFullName as parseFullNameStandalone } from "./contactService.js";
 
@@ -130,6 +132,56 @@ function buildProductRowsFromSelection(picks = []) {
 }
 
 /**
+ * Формируем компактную строку COMMENTS-лога для лида.
+ * Пример:
+ * [2025-11-24T09:33:12.345Z] stage=PRICING action=abcp_lookup name="Иван Иванов" phone="+7900..." msg="нужны колодки..." reply="Вот варианты..." oems="A123...,4N09..."
+ */
+function buildCommentLogLine({ llm, session, lastUserMessage }) {
+  const ts = new Date().toISOString();
+  const stage = llm?.stage || session?.state?.stage || "NEW";
+  const action = llm?.action || "reply";
+
+  const name =
+    session?.name ||
+    llm?.client_name ||
+    session?.state?.client_name ||
+    "";
+
+  const phone =
+    session?.phone ||
+    llm?.update_lead_fields?.PHONE ||
+    llm?.update_lead_fields?.phone ||
+    "";
+
+  const msg = truncate(lastUserMessage || "", 160);
+  const reply = truncate(llm?.reply || "", 160);
+
+  const oems = Array.isArray(llm?.oems) && llm.oems.length
+    ? llm.oems.join(",")
+    : "";
+
+  const parts = [
+    `[${ts}]`,
+    `stage=${stage}`,
+    `action=${action}`,
+  ];
+
+  if (name) parts.push(`name="${name}"`);
+  if (phone) parts.push(`phone="${phone}"`);
+  if (msg) parts.push(`msg="${msg}"`);
+  if (reply) parts.push(`reply="${reply}"`);
+  if (oems) parts.push(`oems="${oems}"`);
+
+  return parts.join(" ");
+}
+
+function truncate(str, max) {
+  if (!str) return "";
+  if (str.length <= max) return str;
+  return str.slice(0, max - 3) + "...";
+}
+
+/**
  * Фабрика API для работы с лидами.
  *
  * @param {object} rest - клиент, у которого есть метод call(method, params)
@@ -159,6 +211,12 @@ export function createLeadsApi(rest) {
       "Лид создан",
     );
 
+    eventBus.emit("LEAD_CREATED", {
+      leadId,
+      dialogId: dialogMeta.dialogId,
+      fields,
+    });
+
     return leadId;
   }
 
@@ -179,6 +237,12 @@ export function createLeadsApi(rest) {
     });
 
     logger.info({ ctx: CTX, leadId, fields }, "Лид обновлён");
+
+    eventBus.emit("LEAD_UPDATED", {
+      leadId,
+      fields,
+    });
+
     return true;
   }
 
@@ -222,7 +286,16 @@ export function createLeadsApi(rest) {
     const prev = (lead && lead.COMMENTS) || "";
     const next = prev ? `${prev}\n\n${comment}` : comment;
 
-    return updateLead(leadId, { COMMENTS: next });
+    const ok = await updateLead(leadId, { COMMENTS: next });
+
+    if (ok) {
+      eventBus.emit("LEAD_COMMENT_APPENDED", {
+        leadId,
+        comment,
+      });
+    }
+
+    return ok;
   }
 
   /**
@@ -245,6 +318,11 @@ export function createLeadsApi(rest) {
       { ctx: CTX, leadId, rowsCount: safeRows.length },
       "Установлены product rows для лида",
     );
+
+    eventBus.emit("PRODUCT_ROWS_SET", {
+      leadId,
+      rowsCount: safeRows.length,
+    });
   }
 
   /**
@@ -304,8 +382,16 @@ export function createLeadsApi(rest) {
  *  - portal          — домен портала Bitrix
  *  - dialogId        — ID диалога в ОЛ (для связи лида с чатом)
  *  - session         — объект сессии (будет обновлён и потом сохранён handler'ом)
- *  - llm             — strict JSON-ответ LLM (action, stage, oems, update_lead_fields, client_name, ...)
+ *  - llm             — strict JSON-ответ LLM (action, stage, oems, update_lead_fields, client_name, product_rows, product_picks, ...)
  *  - lastUserMessage — текст последнего сообщения клиента (для COMMENTS)
+ *
+ * @param {{
+ *   portal: string,
+ *   dialogId: string,
+ *   session: any,
+ *   llm: import("../llm/openaiClient.js").LLMFunnelResponse,
+ *   lastUserMessage?: string
+ * }} params
  */
 export async function safeUpdateLeadAndContact({
   portal,
@@ -452,12 +538,30 @@ export async function safeUpdateLeadAndContact({
       await leads.setProductRowsFromSelection(leadId, llm.product_picks);
     }
 
-    // 8) Синхронизируем Контакт по данным лида/сессии
+    // 8) COMMENTS-лог: добавляем краткую структурированную строку
+    const commentLine = buildCommentLogLine({
+      llm,
+      session,
+      lastUserMessage,
+    });
+
+    if (commentLine) {
+      await leads.appendComment(leadId, commentLine);
+    }
+
+    // 9) Синхронизируем Контакт по данным лида/сессии
     await contacts.syncContactFromLead({
       ctx,
       leadId,
       session,
       fields,
+    });
+
+    eventBus.emit("CRM_SAFE_UPDATE_DONE", {
+      portal,
+      dialogId,
+      leadId,
+      stage: llm.stage || session.state.stage,
     });
   } catch (err) {
     logger.error(

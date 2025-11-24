@@ -71,6 +71,7 @@ export function prepareFunnelContext({ session, msg, injectedABCP }) {
  * @param {Object} context.session
  * @param {Object} context.msg
  * @param {Object|null} [context.abcp]
+ * @returns {Promise<import("./openaiClient.js").LLMFunnelResponse>}
  */
 export async function runFunnelLLM(context) {
   const ctx = `${CTX}.runFunnelLLM`;
@@ -228,6 +229,8 @@ function buildAbcpSummary(abcp) {
 
 /**
  * Fallback-ответ, если что-то пошло совсем не так.
+ *
+ * @returns {import("./openaiClient.js").LLMFunnelResponse}
  */
 function fallback() {
   return {
@@ -239,5 +242,7 @@ function fallback() {
     update_lead_fields: {},
     client_name: null,
     oems: [],
+    product_rows: [],
+    product_picks: [],
   };
 }
