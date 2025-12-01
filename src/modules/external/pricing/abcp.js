@@ -56,10 +56,11 @@ export function extractOEMsFromText(text) {
   text = text.replace(/(\+?\d[\d\s\-\(\)]{7,}\d)/g, " ");
 
   const oems = text
-    .split(/[\s,;\n\r]+/)
-    .map((x) => x.trim().toUpperCase().replace(/[^A-Z0-9]/g, ""))
-    .filter((x) => x.length >= 6 && x.length <= 20);
+    .split(/[\s,;\n\r]+/) // разбиваем по пробелам, запятым, переводам строк
+    .map((x) => x.trim().toUpperCase().replace(/[^A-Z0-9]/g, "")) // чистим мусор
+    .filter((x) => x.length >= 6 && x.length <= 20); // грубый фильтр длины
 
+  // Убираем дубликаты
   return [...new Set(oems)];
 }
 
@@ -357,6 +358,17 @@ function normalizeAbcpResponse(oem, rows) {
       }
     }
 
+    // OEM этой конкретной позиции — может отличаться от запрошенного
+    const offerOem =
+      row?.number ||
+      row?.article ||
+      row?.oem ||
+      oem;
+
+    // Флаг аналога и оригинала — отдаём наверх, Cortex их использует
+    const isAnalog = row?.isAnalog ?? null;
+    const isOriginal = row?.isOriginal ?? null;
+
     offers.push({
       brand: row.brand || null,
       supplier: null,
@@ -367,6 +379,10 @@ function normalizeAbcpResponse(oem, rows) {
       availabilityRaw: rawQty,
       // в LLM уходит человекочитаемый срок, если есть
       deliveryRaw: deadlineRaw,
+      // новенькое:
+      oem: offerOem,
+      isAnalog,
+      isOriginal,
     });
   }
 

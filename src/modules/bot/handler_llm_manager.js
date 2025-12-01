@@ -9,8 +9,10 @@ import { safeUpdateLeadAndContact } from "../crm/leads.js";
 import { searchManyOEMs } from "../external/pricing/abcp.js";
 import { prepareFunnelContext, runFunnelLLM } from "../llm/llmFunnelEngine.js";
 import { sendOL } from "../openlines/api.js";
-
 import { saveSession, getSession } from "./sessionStore.js";
+
+// ⚠️ Новый импорт: HF-CORTEX клиент
+import { callCortexLeadSales } from "../../core/hfCortexClient.js";
 
 const CTX = "handler_llm";
 
@@ -48,9 +50,9 @@ function createEmptySession() {
       last_reply: null,
     },
     // CRM
-    name: null,        // полное ФИО (строка)
+    name: null, // полное ФИО (строка)
     phone: null,
-    address: null,     // адрес доставки / ПВЗ СДЭК
+    address: null, // адрес доставки / ПВЗ СДЭК
     lastQuery: null,
     leadId: null,
     leadCreated: false,
@@ -78,6 +80,48 @@ async function safeDoABCP(oems) {
     logger.error({ ctx: CTX, err }, "Ошибка ABCP");
     return {};
   }
+}
+
+//
+// Маппер ответа HF-CORTEX → внутренний формат LLMFunnelResponse
+//
+function mapCortexResultToLLM(cortexResponse) {
+  if (!cortexResponse) return null;
+
+  // предполагаем структуру:
+  // {
+  //   ok: true,
+  //   flow: "lead_sales",
+  //   context: {...},
+  //   result: {
+  //     action, stage, reply, reply_text, oems, update_lead_fields,
+  //     product_rows, product_picks, client_name, ...
+  //   }
+  // }
+  const res = cortexResponse.result || cortexResponse;
+
+  if (!res || typeof res !== "object") return null;
+
+  const llm = {
+    action: res.action || null,
+    stage: res.stage || null,
+    reply: res.reply ?? res.reply_text ?? null,
+    oems: Array.isArray(res.oems) ? res.oems : [],
+    update_lead_fields:
+      (res.update_lead_fields &&
+        typeof res.update_lead_fields === "object" &&
+        !Array.isArray(res.update_lead_fields)
+        ? res.update_lead_fields
+        : {}),
+    product_rows: Array.isArray(res.product_rows) ? res.product_rows : [],
+    product_picks: Array.isArray(res.product_picks) ? res.product_picks : [],
+    client_name:
+      res.client_name ??
+      cortexResponse.context?.client_name ??
+      null,
+  };
+
+  return llm;
 }
 
 //
@@ -122,55 +166,229 @@ export async function processIncomingBitrixMessage(req, res) {
     const baseContext = await prepareFunnelContext({ session, msg });
 
     //
-    // 2) LLM → strict JSON (первый проход)
+    // 2) Попытка вызвать HF-CORTEX (если включен)
     //
-    /** @type {import("../llm/openaiClient.js").LLMFunnelResponse} */
-    let llm = await runFunnelLLM(baseContext);
-    logger.debug({ ctx: CTX, llm }, "LLM structured JSON (pass 1)");
+    /** @type {import("../llm/openaiClient.js").LLMFunnelResponse | null} */
+    let llm = null;
+    let usedBackend = "llm_funnel";
 
-    eventBus.emit("LLM_RESPONSE", {
-      portal: msg.portal,
-      dialogId: msg.dialogId,
-      pass: 1,
-      llm,
-    });
-
-    //
-    // 3) ABCP (ТОЛЬКО если LLM запросил abcp_lookup по OEM)
-    //
-    let abcpResult = null;
-
-    const needABCP =
-      llm &&
-      llm.action === "abcp_lookup" &&
-      Array.isArray(llm.oems) &&
-      llm.oems.length > 0;
-
-    if (needABCP) {
-      abcpResult = await safeDoABCP(llm.oems);
-
-      eventBus.emit("ABCP_RESULT", {
-        portal: msg.portal,
-        dialogId: msg.dialogId,
-        oems: llm.oems,
-        result: abcpResult,
-      });
-
-      // 3.1) Второй проход LLM с инъекцией ABCP
-      const contextWithABCP = {
-        ...baseContext,
-        injectedABCP: abcpResult,
+    try {
+      const cortexPayload = {
+        msg,
+        sessionSnapshot: {
+          state: session.state,
+          leadId: session.leadId,
+          leadCreated: session.leadCreated,
+          lastQuery: session.lastQuery,
+        },
+        baseContext,
       };
 
-      llm = await runFunnelLLM(contextWithABCP);
-      logger.debug({ ctx: CTX, llm }, "LLM structured JSON (pass 2)");
+      const cortexResponse = await callCortexLeadSales(
+        cortexPayload,
+        logger,
+      );
+
+      if (cortexResponse && cortexResponse.ok !== false) {
+        const mapped = mapCortexResultToLLM(cortexResponse);
+
+        if (mapped) {
+          llm = mapped;
+          usedBackend = "hf_cortex";
+
+          eventBus.emit("HF_CORTEX_RESPONSE", {
+            portal: msg.portal,
+            dialogId: msg.dialogId,
+            response: cortexResponse,
+            mapped,
+          });
+
+          logger.debug(
+            { ctx: CTX, mapped },
+            "HF-CORTEX mapped LLM response",
+          );
+        }
+      }
+    } catch (err) {
+      logger.error(
+        { ctx: CTX, err },
+        "Ошибка вызова HF-CORTEX, fallback на локальный LLM",
+      );
+      eventBus.emit("HF_CORTEX_ERROR", {
+        portal: msg.portal,
+        dialogId: msg.dialogId,
+        error: {
+          message: err.message,
+          name: err.name,
+        },
+      });
+      // llm останется null → пойдём по старому пути
+    }
+
+    //
+    // 2.b Fallback: если HF-CORTEX не дал валидный ответ — используем локальный LLM-поток
+    //
+    if (!llm) {
+      /** @type {import("../llm/openaiClient.js").LLMFunnelResponse} */
+      const firstPass = await runFunnelLLM(baseContext);
+      llm = firstPass;
+      usedBackend = "llm_funnel";
+
+      logger.debug(
+        { ctx: CTX, llm },
+        "LLM structured JSON (pass 1, local funnel)",
+      );
 
       eventBus.emit("LLM_RESPONSE", {
         portal: msg.portal,
         dialogId: msg.dialogId,
-        pass: 2,
+        pass: 1,
+        backend: "llm_funnel",
         llm,
       });
+
+      //
+      // 3) ABCP (ТОЛЬКО если LLM запросил abcp_lookup по OEM)
+      //
+      let abcpResult = null;
+
+      const needABCP =
+        llm &&
+        llm.action === "abcp_lookup" &&
+        Array.isArray(llm.oems) &&
+        llm.oems.length > 0;
+
+      if (needABCP) {
+        abcpResult = await safeDoABCP(llm.oems);
+
+        eventBus.emit("ABCP_RESULT", {
+          portal: msg.portal,
+          dialogId: msg.dialogId,
+          oems: llm.oems,
+          result: abcpResult,
+        });
+
+        // 3.1) Второй проход LLM с инъекцией ABCP
+        const contextWithABCP = {
+          ...baseContext,
+          injectedABCP: abcpResult,
+        };
+
+        llm = await runFunnelLLM(contextWithABCP);
+        logger.debug(
+          { ctx: CTX, llm },
+          "LLM structured JSON (pass 2, local funnel)",
+        );
+
+        eventBus.emit("LLM_RESPONSE", {
+          portal: msg.portal,
+          dialogId: msg.dialogId,
+          pass: 2,
+          backend: "llm_funnel",
+          llm,
+        });
+      }
+
+      // Обновим session.abcp внизу через newSession (см. ниже)
+      // Для HF-CORTEX путь с ABCP пока не трогаем — туда будем прокидывать позже.
+    } else {
+      //
+      // HF-CORTEX дал валидный ответ (первый проход)
+      //
+      eventBus.emit("LLM_RESPONSE", {
+        portal: msg.portal,
+        dialogId: msg.dialogId,
+        pass: "cortex_init",
+        backend: usedBackend,
+        llm,
+      });
+
+      //
+      // 3) ABCP для HF-CORTEX (второй проход)
+      //
+      let abcpResult = null;
+
+      const needABCPForCortex =
+        llm &&
+        llm.action === "abcp_lookup" &&
+        Array.isArray(llm.oems) &&
+        llm.oems.length > 0;
+
+      if (needABCPForCortex) {
+        // 3.0) ABCP по OEM, которые вернул Cortex
+        abcpResult = await safeDoABCP(llm.oems);
+
+        eventBus.emit("ABCP_RESULT", {
+          portal: msg.portal,
+          dialogId: msg.dialogId,
+          oems: llm.oems,
+          result: abcpResult,
+        });
+
+        // 3.1) Второй проход HF-CORTEX с инъекцией ABCP в baseContext
+        try {
+          const cortexPayload2 = {
+            msg,
+            sessionSnapshot: {
+              state: {
+                ...session.state,
+                stage: llm.stage || session.state.stage,
+                client_name:
+                  llm.client_name ?? session.state.client_name,
+                last_reply: llm.reply ?? session.state.last_reply,
+              },
+              leadId: session.leadId,
+              leadCreated: session.leadCreated,
+              lastQuery: msg.text,
+            },
+            baseContext: {
+              ...baseContext,
+              injectedABCP: abcpResult,
+            },
+          };
+
+          const cortexResponse2 = await callCortexLeadSales(
+            cortexPayload2,
+            logger,
+          );
+
+          if (cortexResponse2 && cortexResponse2.ok !== false) {
+            const mapped2 = mapCortexResultToLLM(cortexResponse2);
+
+            if (mapped2) {
+              llm = mapped2;
+              usedBackend = "hf_cortex";
+
+              eventBus.emit("HF_CORTEX_RESPONSE", {
+                portal: msg.portal,
+                dialogId: msg.dialogId,
+                response: cortexResponse2,
+                mapped: mapped2,
+                pass: 2,
+              });
+
+              eventBus.emit("LLM_RESPONSE", {
+                portal: msg.portal,
+                dialogId: msg.dialogId,
+                pass: "cortex_abcp",
+                backend: usedBackend,
+                llm,
+              });
+
+              logger.debug(
+                { ctx: CTX, llm },
+                "HF-CORTEX mapped LLM response (pass 2, with ABCP)",
+              );
+            }
+          }
+        } catch (err) {
+          logger.error(
+            { ctx: CTX, err },
+            "Ошибка второго прохода HF-CORTEX с ABCP, продолжаем с первым ответом",
+          );
+          // В случае ошибки просто остаёмся на первом llm-ответе Cortex
+        }
+      }
     }
 
     //
@@ -196,13 +414,14 @@ export async function processIncomingBitrixMessage(req, res) {
     //
     // 5) Ответ клиенту в Открытые линии
     //
-    if (llm.reply) {
+    if (llm && llm.reply) {
       await sendOL(msg.portal, msg.dialogId, llm.reply);
 
       eventBus.emit("OL_SEND", {
         portal: msg.portal,
         dialogId: msg.dialogId,
         text: llm.reply,
+        backend: usedBackend,
       });
     }
 
@@ -212,17 +431,21 @@ export async function processIncomingBitrixMessage(req, res) {
     const newSession = {
       ...session,
       state: {
-        stage: llm.stage || session.state.stage,
-        client_name: llm.client_name ?? session.state.client_name,
-        last_reply: llm.reply,
+        stage: (llm && llm.stage) || session.state.stage,
+        client_name:
+          (llm && llm.client_name) ?? session.state.client_name,
+        last_reply: llm ? llm.reply : session.state.last_reply,
       },
-      abcp: abcpResult ?? session.abcp,
+      // Для HF-CORTEX мы пока abcp не трогаем (будем прокидывать позже)
+      // здесь оставляем старое значение, если ABCP не дергался в local-funnel
+      updatedAt: Date.now(),
       history: [
         ...session.history,
         { role: "user", text: msg.text },
-        { role: "assistant", text: llm.reply },
+        ...(llm && llm.reply
+          ? [{ role: "assistant", text: llm.reply }]
+          : []),
       ],
-      updatedAt: Date.now(),
     };
 
     saveSession(msg.portal, msg.dialogId, newSession);
