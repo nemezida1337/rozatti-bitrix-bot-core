@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
 
+from core.models import CortexResult
 from flows.lead_sales.flow import run_lead_sales_flow
+import flows.lead_sales.flow as lead_sales_flow
 
 FIXTURES = Path(__file__).parent / "fixtures" / "trace_2026_01_05"
 
@@ -56,9 +58,26 @@ def _assert_contract(actual_result: dict, expected_response: dict):
     assert isinstance(reply, str) and len(reply.strip()) > 0
 
 
-def test_trace_2026_01_05_step1_pricing():
+def _stub_llm_from_expected(monkeypatch, expected_response: dict) -> None:
+    """Stub LLM call for offline replay tests."""
+
+    def _fake_llm(_cortex_request):
+        return CortexResult(**expected_response["result"])
+
+    monkeypatch.setattr(lead_sales_flow, "call_llm_with_cortex_request", _fake_llm)
+
+
+def test_trace_2026_01_05_step1_pricing(monkeypatch):
     req = _load("2026-01-05T16-36-05-903Z__nochat__a8f903__request.json")
     exp = _load("2026-01-05T16-36-05-903Z__nochat__a8f903__response.json")
+
+    # Step1 is a deterministic short-path: with injected ABCP at NEW
+    # flow must not call LLM.
+    monkeypatch.setattr(
+        lead_sales_flow,
+        "call_llm_with_cortex_request",
+        lambda _req: (_ for _ in ()).throw(AssertionError("LLM must not be called on step1 short-path")),
+    )
 
     payload = req["payload"]
     result = run_lead_sales_flow(
@@ -76,9 +95,10 @@ def test_trace_2026_01_05_step1_pricing():
     assert len(actual.get("offers") or []) == 3
 
 
-def test_trace_2026_01_05_step2_choice_to_contact():
+def test_trace_2026_01_05_step2_choice_to_contact(monkeypatch):
     req = _load("2026-01-05T16-36-18-253Z__nochat__2d391c__request.json")
     exp = _load("2026-01-05T16-36-18-253Z__nochat__2d391c__response.json")
+    _stub_llm_from_expected(monkeypatch, exp)
 
     payload = req["payload"]
     result = run_lead_sales_flow(
@@ -94,9 +114,10 @@ def test_trace_2026_01_05_step2_choice_to_contact():
     assert actual.get("chosen_offer_id") == 3
 
 
-def test_trace_2026_01_05_step3_contact_parse_no_address_pollution():
+def test_trace_2026_01_05_step3_contact_parse_no_address_pollution(monkeypatch):
     req = _load("2026-01-05T16-37-11-673Z__nochat__aa39ee__request.json")
     exp = _load("2026-01-05T16-37-11-673Z__nochat__aa39ee__response.json")
+    _stub_llm_from_expected(monkeypatch, exp)
 
     payload = req["payload"]
     result = run_lead_sales_flow(
@@ -117,9 +138,10 @@ def test_trace_2026_01_05_step3_contact_parse_no_address_pollution():
     assert (actual.get("update_lead_fields") or {}).get("PHONE") is not None
 
 
-def test_trace_2026_01_05_step4_final_sets_product_rows_and_address():
+def test_trace_2026_01_05_step4_final_sets_product_rows_and_address(monkeypatch):
     req = _load("2026-01-05T16-37-33-666Z__nochat__11bb53__request.json")
     exp = _load("2026-01-05T16-37-33-666Z__nochat__11bb53__response.json")
+    _stub_llm_from_expected(monkeypatch, exp)
 
     payload = req["payload"]
     result = run_lead_sales_flow(
