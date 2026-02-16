@@ -26,14 +26,14 @@ if (!ABCP_DOMAIN || !ABCP_LOGIN || !ABCP_USERPSW_MD5) {
     {
       ctx: CTX,
       ABCP_DOMAIN,
-      ABCP_LOGIN,
+      hasLogin: Boolean(ABCP_LOGIN),
       hasPassword: Boolean(ABCP_USERPSW_MD5),
     },
     "ABCP не сконфигурирован. Проверь .env",
   );
 } else {
   logger.info(
-    { ctx: CTX, ABCP_DOMAIN, ABCP_LOGIN, hasPassword: true },
+    { ctx: CTX, ABCP_DOMAIN, hasLogin: true, hasPassword: true },
     "ABCP конфиг загружен",
   );
 }
@@ -66,6 +66,18 @@ export function extractOEMsFromText(text) {
 
 function sleep(ms) {
   return new Promise((res) => setTimeout(res, ms));
+}
+
+function redactParamsForLogs(params) {
+  if (!params || typeof params !== "object") return params;
+  const out = { ...params };
+  if (Object.prototype.hasOwnProperty.call(out, "userpsw")) {
+    out.userpsw = "***";
+  }
+  if (Object.prototype.hasOwnProperty.call(out, "userlogin")) {
+    out.userlogin = "***";
+  }
+  return out;
 }
 
 /**
@@ -136,7 +148,7 @@ async function queryArticle(oem, brand = "") {
     if (brand) params.brand = brand;
 
     logger.info(
-      { ctx: CTX, oem, brand, params },
+      { ctx: CTX, oem, brand, params: redactParamsForLogs(params) },
       "HTTP GET /search/articles",
     );
 
@@ -173,7 +185,7 @@ async function queryArticle(oem, brand = "") {
 
     if (status === 429) {
       logger.warn(
-        { ctx: CTX, oem, brand, url, params },
+        { ctx: CTX, oem, brand, url, params: redactParamsForLogs(params) },
         `429 по OEM ${oem}, retry через 1.5 сек`,
       );
       await sleep(1500);
@@ -199,7 +211,16 @@ async function queryArticle(oem, brand = "") {
     }
 
     logger.error(
-      { ctx: CTX, oem, brand, status, url, params, data, message },
+      {
+        ctx: CTX,
+        oem,
+        brand,
+        status,
+        url,
+        params: redactParamsForLogs(params),
+        data,
+        message,
+      },
       "Ошибка queryArticle",
     );
 
@@ -208,7 +229,7 @@ async function queryArticle(oem, brand = "") {
       brand,
       status,
       url,
-      params,
+      params: redactParamsForLogs(params),
       data,
       message,
     });
@@ -231,7 +252,10 @@ async function queryBrands(oem) {
       limit: 10,
     };
 
-    logger.info({ ctx: CTX, oem, params }, "HTTP GET /search/brands");
+    logger.info(
+      { ctx: CTX, oem, params: redactParamsForLogs(params) },
+      "HTTP GET /search/brands",
+    );
 
     const r = await api.get(`/search/brands`, { params });
     const data = r.data;
@@ -268,7 +292,15 @@ async function queryBrands(oem) {
     const message = err?.message;
 
     logger.error(
-      { ctx: CTX, oem, status, url, params, data, message },
+      {
+        ctx: CTX,
+        oem,
+        status,
+        url,
+        params: redactParamsForLogs(params),
+        data,
+        message,
+      },
       "Ошибка queryBrands",
     );
 
@@ -276,7 +308,7 @@ async function queryBrands(oem) {
       oem,
       status,
       url,
-      params,
+      params: redactParamsForLogs(params),
       data,
       message,
     });
@@ -316,10 +348,7 @@ function normalizeAbcpResponse(oem, rows) {
 
     // === СРОКИ ===
     // 1) Строго используем текстовые поля для основного значения
-    const deadlineRaw =
-      row.deadlineReplace ??
-      row.deadline ??
-      null;
+    const deadlineRaw = row.deadlineReplace ?? row.deadline ?? null;
 
     let minDays = null;
     let maxDays = null;
@@ -359,11 +388,7 @@ function normalizeAbcpResponse(oem, rows) {
     }
 
     // OEM этой конкретной позиции — может отличаться от запрошенного
-    const offerOem =
-      row?.number ||
-      row?.article ||
-      row?.oem ||
-      oem;
+    const offerOem = row?.number || row?.article || row?.oem || oem;
 
     // Флаг аналога и оригинала — отдаём наверх, Cortex их использует
     const isAnalog = row?.isAnalog ?? null;
@@ -425,17 +450,20 @@ function normalizeAbcpResponse(oem, rows) {
 export async function searchManyOEMs(oems = []) {
   const result = {};
 
-  for (const oem of oems) {
-    logger.info({ ctx: CTX, oem }, "Поиск по OEM");
+  for (const requestedOemRaw of oems) {
+    const requestedOem = String(requestedOemRaw || "").trim().toUpperCase();
+    if (!requestedOem) continue;
 
-    const brands = await queryBrands(oem);
+    logger.info({ ctx: CTX, oem: requestedOem }, "Поиск по OEM");
+
+    const brands = await queryBrands(requestedOem);
 
     if (!brands.length) {
       logger.info(
-        { ctx: CTX, oem },
+        { ctx: CTX, oem: requestedOem },
         "Бренды не найдены, предложений нет",
       );
-      result[oem] = { offers: [] };
+      result[requestedOem] = result[requestedOem] || { offers: [] };
       continue;
     }
 
@@ -444,53 +472,61 @@ export async function searchManyOEMs(oems = []) {
 
     if (!brand) {
       logger.warn(
-        { ctx: CTX, oem, brandObj },
+        { ctx: CTX, oem: requestedOem, brandObj },
         "Не удалось определить brand из search/brands",
       );
-      result[oem] = { offers: [] };
+      result[requestedOem] = result[requestedOem] || { offers: [] };
       continue;
     }
 
     logger.info(
-      { ctx: CTX, oem, brand },
+      { ctx: CTX, oem: requestedOem, brand },
       "Используем brand для поиска статей",
     );
 
-    const rows = await queryArticle(oem, brand);
-    const offers = normalizeAbcpResponse(oem, rows);
+    const rows = await queryArticle(requestedOem, brand);
+    const offers = normalizeAbcpResponse(requestedOem, rows);
 
-    if (offers.length) {
-      const prices = offers.map((o) => o.price);
-      const minPrice = Math.min(...prices);
-      const maxPrice = Math.max(...prices);
+    // === КЛЮЧЕВАЯ ПРАВКА ===
+    // ABCP может вернуть строки по "оригинальным заменам" (другой OEM),
+    // поэтому раскладываем офферы по реальному offer.oem в отдельные ключи.
+    const grouped = {};
+    for (const off of offers) {
+      const key = String(off?.oem || requestedOem).trim().toUpperCase();
+      if (!key) continue;
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(off);
+    }
 
-      const days = offers
-        .flatMap((o) => [o.minDays || 0, o.maxDays || 0])
-        .filter((d) => d > 0);
-
-      const minDays = days.length ? Math.min(...days) : null;
-      const maxDays = days.length ? Math.max(...days) : null;
-
-      logger.info(
-        {
-          ctx: CTX,
-          oem,
-          offersCount: offers.length,
-          minPrice,
-          maxPrice,
-          minDays,
-          maxDays,
-        },
-        "searchManyOEMs summary",
-      );
-    } else {
-      logger.info(
-        { ctx: CTX, oem },
-        "searchManyOEMs summary: предложений нет",
+    // Сортируем каждую группу по цене (детерминированно)
+    for (const [k, arr] of Object.entries(grouped)) {
+      arr.sort((a, b) => (a.price || 0) - (b.price || 0));
+      // мерджим в общий result
+      if (!result[k]) result[k] = { offers: [] };
+      result[k].offers = [...(result[k].offers || []), ...arr].sort(
+        (a, b) => (a.price || 0) - (b.price || 0),
       );
     }
 
-    result[oem] = { offers };
+    // Если вдруг вообще ничего не пришло — оставим пусто хотя бы по запрошенному
+    if (!Object.keys(grouped).length) {
+      result[requestedOem] = result[requestedOem] || { offers: [] };
+    }
+
+    // Логируем: сколько OEM получилось из одного запроса
+    const keys = Object.keys(grouped);
+    logger.info(
+      {
+        ctx: CTX,
+        requestedOem,
+        groupedOems: keys,
+        groupedCounts: keys.reduce((acc, k) => {
+          acc[k] = grouped[k].length;
+          return acc;
+        }, {}),
+      },
+      "searchManyOEMs grouped result (requested + replacements)",
+    );
   }
 
   logger.info(
@@ -502,21 +538,21 @@ export async function searchManyOEMs(oems = []) {
 
 // --------- ВНЕШНИЙ ИНТЕРФЕЙС ДЛЯ БОТА ---------
 
-export async function abcpLookupFromText(text) {
-  const oems = extractOEMsFromText(text);
-  logger.info(
-    { ctx: CTX, text, oems },
-    "abcpLookupFromText: извлечены OEM",
-  );
+export async function abcpLookupFromText(text, oemsFromLlm = []) {
+  let oems = [];
+
+  if (Array.isArray(oemsFromLlm) && oemsFromLlm.length > 0) {
+    oems = oemsFromLlm.map((x) => x.trim().toUpperCase());
+    logger.info({ ctx: CTX, oems }, "abcpLookupFromText: OEM из LLM");
+  } else {
+    oems = extractOEMsFromText(text);
+    logger.info({ ctx: CTX, oems }, "abcpLookupFromText: OEM из текста");
+  }
 
   if (!oems.length) return {};
 
   const data = await searchManyOEMs(oems);
 
-  logger.info(
-    { ctx: CTX, data },
-    "abcpLookupFromText: итоговые данные для LLM",
-  );
-
+  logger.info({ ctx: CTX, data }, "abcpLookupFromText: итоговые данные");
   return data;
 }

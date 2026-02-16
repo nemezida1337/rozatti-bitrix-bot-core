@@ -1,0 +1,202 @@
+{
+  "app": "hf-rozatti-py",
+  "flow": "lead_sales",
+  "payload": {
+    "msg": {
+      "text": "давайте вариант 3"
+    },
+    "sessionSnapshot": {
+      "mode": "auto",
+      "manualAckSent": false,
+      "oem_candidates": [
+        "5QM411105R"
+      ],
+      "lastSeenLeadOem": "5QM411105R",
+      "createdAt": 1767630963464,
+      "updatedAt": 1767630966400,
+      "state": {
+        "stage": "PRICING",
+        "client_name": null,
+        "last_reply": "Добрый день! По номеру 5QM411105R есть варианты:\nВариант 1 — VAG 5QM411105R за 17 700 ₽, срок до 337 раб. дней.\nВариант 2 — VAG 5QM411105R за 19 800 ₽, срок до 265 раб. дней.\nВариант 3 — VAG 5QM411105R за 21 800 ₽, срок до 217 раб. дней.\n\nВыберите, пожалуйста, подходящий вариант (можно несколько).",
+        "oems": [
+          "5QM411105R"
+        ],
+        "offers": [
+          {
+            "id": 1,
+            "oem": "5QM411105R",
+            "brand": "VAG",
+            "name": "VAG 5QM411105R",
+            "price": 17700,
+            "currency": "RUB",
+            "quantity": 1,
+            "delivery_days": 337,
+            "source": null,
+            "comment": null
+          },
+          {
+            "id": 2,
+            "oem": "5QM411105R",
+            "brand": "VAG",
+            "name": "VAG 5QM411105R",
+            "price": 19800,
+            "currency": "RUB",
+            "quantity": 1,
+            "delivery_days": 265,
+            "source": null,
+            "comment": null
+          },
+          {
+            "id": 3,
+            "oem": "5QM411105R",
+            "brand": "VAG",
+            "name": "VAG 5QM411105R",
+            "price": 21800,
+            "currency": "RUB",
+            "quantity": 1,
+            "delivery_days": 217,
+            "source": null,
+            "comment": null
+          }
+        ]
+      },
+      "name": null,
+      "phone": null,
+      "address": null,
+      "lastQuery": null,
+      "leadId": "TEST_LEAD_1",
+      "leadCreated": false,
+      "abcp": {
+        "5QM411105R": {
+          "offers": [
+            {
+              "brand": "VAG",
+              "supplier": null,
+              "price": 17700,
+              "quantity": 100,
+              "minDays": 337,
+              "maxDays": 337,
+              "availabilityRaw": 100,
+              "deliveryRaw": "до 14 р.дн",
+              "oem": "5QM411105R",
+              "isAnalog": false,
+              "isOriginal": null
+            },
+            {
+              "brand": "VAG",
+              "supplier": null,
+              "price": 19800,
+              "quantity": 100,
+              "minDays": 265,
+              "maxDays": 265,
+              "availabilityRaw": 100,
+              "deliveryRaw": "до 9 р.дн.",
+              "oem": "5QM411105R",
+              "isAnalog": false,
+              "isOriginal": null
+            },
+            {
+              "brand": "VAG",
+              "supplier": null,
+              "price": 21800,
+              "quantity": 100,
+              "minDays": 217,
+              "maxDays": 217,
+              "availabilityRaw": 100,
+              "deliveryRaw": "до 7 р.дн.",
+              "oem": "5QM411105R",
+              "isAnalog": false,
+              "isOriginal": null
+            }
+          ]
+        }
+      },
+      "history": [],
+      "lastProcessedMessageId": 530346,
+      "lastProcessedAt": 1767630978252
+    },
+    "injected_abcp": {
+      "5QM411105R": {
+        "offers": [
+          {
+            "brand": "VAG",
+            "supplier": null,
+            "price": 17700,
+            "quantity": 100,
+            "minDays": 337,
+            "maxDays": 337,
+            "availabilityRaw": 100,
+            "deliveryRaw": "до 14 р.дн",
+            "oem": "5QM411105R",
+            "isAnalog": false,
+            "isOriginal": null
+          },
+          {
+            "brand": "VAG",
+            "supplier": null,
+            "price": 19800,
+            "quantity": 100,
+            "minDays": 265,
+            "maxDays": 265,
+            "availabilityRaw": 100,
+            "deliveryRaw": "до 9 р.дн.",
+            "oem": "5QM411105R",
+            "isAnalog": false,
+            "isOriginal": null
+          },
+          {
+            "brand": "VAG",
+            "supplier": null,
+            "price": 21800,
+            "quantity": 100,
+            "minDays": 217,
+            "maxDays": 217,
+            "availabilityRaw": 100,
+            "deliveryRaw": "до 7 р.дн.",
+            "oem": "5QM411105R",
+            "isAnalog": false,
+            "isOriginal": null
+          }
+        ]
+      }
+    },
+    "offers": [
+      {
+        "id": 1,
+        "oem": "5QM411105R",
+        "brand": "VAG",
+        "name": "VAG 5QM411105R",
+        "price": 17700,
+        "currency": "RUB",
+        "quantity": 1,
+        "delivery_days": 337,
+        "source": null,
+        "comment": null
+      },
+      {
+        "id": 2,
+        "oem": "5QM411105R",
+        "brand": "VAG",
+        "name": "VAG 5QM411105R",
+        "price": 19800,
+        "currency": "RUB",
+        "quantity": 1,
+        "delivery_days": 265,
+        "source": null,
+        "comment": null
+      },
+      {
+        "id": 3,
+        "oem": "5QM411105R",
+        "brand": "VAG",
+        "name": "VAG 5QM411105R",
+        "price": 21800,
+        "currency": "RUB",
+        "quantity": 1,
+        "delivery_days": 217,
+        "source": null,
+        "comment": null
+      }
+    ]
+  }
+}

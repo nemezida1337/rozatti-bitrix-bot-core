@@ -5,7 +5,7 @@ console.info("[LLM] register wrapper loaded");
 
 // Реэкспортируем всё, что явно экспортируется из core
 export * from "./register.core.js";
-import { processIncomingBitrixMessage } from "./handler_llm_manager.js";
+import { processIncomingBitrixMessage } from "./handler/index.js";
 import * as core from "./register.core.js";
 
 // Новый LLM-хендлер (подменяет старый)

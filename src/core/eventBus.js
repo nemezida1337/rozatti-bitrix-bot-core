@@ -16,68 +16,65 @@ class EventBus {
   }
 
   /**
-   * Подписаться на событие.
+   * Подписка на событие
    * @param {string} event
    * @param {(payload: any) => void | Promise<void>} handler
    */
   on(event, handler) {
-    if (!event || typeof handler !== "function") return;
     if (!this.handlers.has(event)) {
       this.handlers.set(event, new Set());
     }
+
     this.handlers.get(event).add(handler);
   }
 
   /**
-   * Отписаться от события.
+   * Отписка от события
    * @param {string} event
-   * @param {(payload: any) => void | Promise<void>} handler
+   * @param {Function} handler
    */
   off(event, handler) {
-    const set = this.handlers.get(event);
-    if (!set) return;
-    set.delete(handler);
-    if (set.size === 0) {
-      this.handlers.delete(event);
-    }
+    if (!this.handlers.has(event)) return;
+    this.handlers.get(event).delete(handler);
   }
 
   /**
    * Публикация события.
-   * Все подписчики вызываются асинхронно, ошибки не роняют основной поток.
+   * Все подписчики вызываются последовательно.
+   * Если какой-то из них бросает ошибку — логируем и идём дальше.
    * @param {string} event
    * @param {any} payload
    */
   async emit(event, payload) {
-    const set = this.handlers.get(event);
-    if (!set || set.size === 0) return;
-
     const ctx = `${CTX}.emit`;
 
-    for (const handler of set) {
+    const handlers = this.handlers.get(event);
+    if (!handlers || handlers.size === 0) {
+      logger.debug({ ctx, event }, "No handlers for event");
+      return;
+    }
+
+    for (const handler of handlers) {
       try {
         const res = handler(payload);
         if (res && typeof res.then === "function") {
           await res;
         }
       } catch (err) {
-        logger.warn(
-          {
-            ctx,
-            event,
-            error: err?.message || String(err),
-          },
-          "EventBus handler threw",
+        logger.error(
+          { ctx, event, payload, err },
+          "Error in event handler",
         );
       }
     }
   }
 }
 
-// Синглтон для всего приложения
 export const eventBus = new EventBus();
 
-// Базовый логгер событий (можно отключить/переопределить позже)
+//
+// Базовые подписчики: логгирование ключевых событий
+//
 eventBus.on("USER_MESSAGE", (p) => {
   logger.info(
     {
@@ -86,22 +83,21 @@ eventBus.on("USER_MESSAGE", (p) => {
       portal: p.portal,
       dialogId: p.dialogId,
     },
-    `USER: "${p.text}"`,
+    `User message: ${p.text}`,
   );
 });
 
 eventBus.on("LLM_RESPONSE", (p) => {
-  logger.debug(
+  logger.info(
     {
       ctx: CTX,
       event: "LLM_RESPONSE",
       portal: p.portal,
       dialogId: p.dialogId,
       pass: p.pass,
-      action: p.llm?.action,
-      stage: p.llm?.stage,
+      backend: p.backend,
     },
-    "LLM structured response",
+    "LLM response received",
   );
 });
 
@@ -114,67 +110,33 @@ eventBus.on("ABCP_RESULT", (p) => {
       dialogId: p.dialogId,
       oems: p.oems,
     },
-    "ABCP lookup complete",
+    "ABCP lookup result",
   );
 });
 
-eventBus.on("OL_SEND", (p) => {
+eventBus.on("HF_CORTEX_RESPONSE", (p) => {
   logger.info(
     {
       ctx: CTX,
-      event: "OL_SEND",
+      event: "HF_CORTEX_RESPONSE",
       portal: p.portal,
       dialogId: p.dialogId,
     },
-    `BOT: "${p.text}"`,
+    "HF-CORTEX response received",
   );
 });
 
-eventBus.on("SESSION_UPDATED", (p) => {
-  logger.debug(
-    {
-      ctx: CTX,
-      event: "SESSION_UPDATED",
-      portal: p.portal,
-      dialogId: p.dialogId,
-      stage: p.session?.state?.stage,
-    },
-    "Session updated",
-  );
-});
-
-eventBus.on("LEAD_CREATED", (p) => {
+eventBus.on("HF_CORTEX_CALLED", (p) => {
   logger.info(
     {
       ctx: CTX,
-      event: "LEAD_CREATED",
-      leadId: p.leadId,
+      event: "HF_CORTEX_CALLED",
+      portal: p.portal,
       dialogId: p.dialogId,
+      pass: p.pass,
+      payloadSummary: p.payloadSummary,
     },
-    "Lead created",
-  );
-});
-
-eventBus.on("LEAD_UPDATED", (p) => {
-  logger.debug(
-    {
-      ctx: CTX,
-      event: "LEAD_UPDATED",
-      leadId: p.leadId,
-      fields: Object.keys(p.fields || {}),
-    },
-    "Lead updated",
-  );
-});
-
-eventBus.on("LEAD_COMMENT_APPENDED", (p) => {
-  logger.debug(
-    {
-      ctx: CTX,
-      event: "LEAD_COMMENT_APPENDED",
-      leadId: p.leadId,
-    },
-    "Comment appended to lead",
+    "HF-CORTEX called",
   );
 });
 
@@ -201,5 +163,18 @@ eventBus.on("CRM_SAFE_UPDATE_DONE", (p) => {
       stage: p.stage,
     },
     "safeUpdateLeadAndContact completed",
+  );
+});
+
+eventBus.on("BOT_REPLY", (p) => {
+  logger.info(
+    {
+      ctx: CTX,
+      event: "BOT_REPLY",
+      portal: p.portal,
+      dialogId: p.dialogId,
+      backend: p.backend,
+    },
+    `BOT_REPLY: "${p.text}"`,
   );
 });

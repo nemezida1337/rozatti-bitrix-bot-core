@@ -1,46 +1,107 @@
-# Rozatti Bitrix Bot Core · HF-OS ядро
+# Rozatti Bitrix Bot Core
 
-Node.js‑бот для Bitrix24, который:
+Node.js-бот для Bitrix24 (OpenLines) + Python HF-Cortex для AI-воронки продаж запчастей.
 
-- принимает сообщения из Открытых линий и чатов Bitrix24;
-- через LLM (OpenAI) **понимает намерения клиента** (OEM, VIN, общие запросы);
-- подбирает **оригинальные автозапчасти** по OEM через **ABCP API**;
-- создает и обновляет лиды/контакты в Bitrix24;
-- ведёт **воронку продаж** от первого сообщения до готового заказа;
-- логирует все шаги в COMMENTS‑поле лида и внутренний EventBus.
+## Что делает проект
 
-Проект создаётся как ядро **HF‑OS (HF‑Technologies AI‑ОС бизнеса)**.  
-Автомобильная тематика (Rozatti, оригинальные запчасти) — первый боевой полигон.
+- принимает входящие события Bitrix24 на `POST /bitrix/events`;
+- обрабатывает сообщения клиента через V2-оркестратор (`src/modules/bot/handler/*`);
+- на простых OEM-запросах делает быстрый путь (ABCP + Cortex);
+- на сложных кейсах использует двухпроходный Cortex flow;
+- обновляет лид/контакт/товарные строки в CRM Bitrix24;
+- хранит сессии диалогов и диагностические дампы на диске.
 
----
+## Актуальная структура
 
-## 1. Быстрый старт
+```text
+src/
+  index.js
+  core/
+    app.js
+    bitrixClient.js
+    env.js
+    eventBus.js
+    hfCortexClient.js
+    logger.js
+    messageModel.js
+    oauth.js
+    store.js
+  http/routes/
+    bitrix.js
+  config/
+    settings.crm.js
+  modules/
+    bot/
+      register.js
+      register.core.js
+      sessionStore.js
+      extractLeadFromEvent.js
+      oemDetector.js
+      leadDecisionGate.js
+      handler/
+        index.js
+        context.js
+        decision.js
+        flows/
+          fastOemFlow.js
+          cortexTwoPassFlow.js
+          managerOemTriggerFlow.js
+        shared/
+          chatReply.js
+          cortex.js
+          leadOem.js
+          session.js
+    crm/
+      leadStateService.js
+      leads/
+        safeUpdateLeadAndContact.js
+        updateLeadService.js
+      contact/
+        contactService.js
+    external/pricing/
+      abcp.js
+    openlines/
+      api.js
+  tests/
+    *.test.js
 
-### 1.1. Требования
+hf_cortex_py/
+  app.py
+  core/
+  flows/lead_sales/
+  tests/
+```
+
+## Требования
 
 - Node.js 20+
 - npm 10+
-- Доступ к порталу Bitrix24 (on‑cloud/on‑premise)
-- Доступ к ABCP API (домен, логин, ключ)
-- Ключ OpenAI (или совместимой LLM)
+- Python 3.10+ (для `hf_cortex_py`)
+- доступ к Bitrix24 (local app + OAuth)
+- доступ к ABCP API
+- ключ OpenAI (если используете HF-Cortex с реальным LLM)
 
-### 1.2. Установка зависимостей
+## Установка
 
 ```bash
 npm install
 ```
 
-### 1.3. Конфигурация `.env`
-
-Создайте `.env` на основе `.env.example`:
+Для Python-сервиса:
 
 ```bash
-cp .env.example .env
+cd hf_cortex_py
+python -m venv .venv
 # Windows:
-# copy .env.example .env
+.venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-Критичные переменные (сокращённо):
+## Конфигурация `.env` (Node)
+
+Создайте `.env` в корне проекта по примеру `.env.example`.
+
+Ключевые переменные:
 
 ```env
 PORT=8080
@@ -50,346 +111,117 @@ BITRIX_CLIENT_ID=local.xxxxx
 BITRIX_CLIENT_SECRET=xxxxxxxx
 BITRIX_OAUTH_URL=https://oauth.bitrix.info/oauth/token/
 BITRIX_OAUTH_REDIRECT=${BASE_URL}/oauth/callback
-
 TOKENS_FILE=./data/portals.json
 
-OPENAI_API_KEY=sk-proj-...
-LLM_MODEL=gpt-4.1-mini
-LLM_MODEL_STRUCTURED=gpt-4.1-mini
+LOG_LEVEL=info
+LOG_DIR=./logs
 
+# HF-Cortex bridge (Node -> Python)
+HF_CORTEX_ENABLED=true
+HF_CORTEX_URL=http://127.0.0.1:9000/api/hf-cortex/lead_sales
+HF_CORTEX_TIMEOUT_MS=20000
+HF_CORTEX_API_KEY=change-me
+
+# ABCP
 ABCP_DOMAIN=abcpXXXX.public.api.abcp.ru
 ABCP_USERLOGIN=api@abcpXXXX
-ABCP_USERPSW_MD5=<md5-хэш>
+ABCP_USERPSW_MD5=<md5>
 ABCP_KEY=api@abcpXXXX
 ```
 
-### 1.4. Публичный URL и Bitrix24
+## Конфигурация `hf_cortex_py`
 
-1. Поднимите HTTPS‑туннель/домен до локального сервера, пропишите в `.env`:
+`hf_cortex_py/app.py` читает переменные из окружения/`.env`:
 
-   ```env
-   BASE_URL=https://your-public-url.example.com
-   ```
+- `OPENAI_API_KEY`
+- `HF_CORTEX_TOKEN` (опционально, токен на входящий API Python-сервиса)
+- `HF_CORTEX_HOST` (по умолчанию `127.0.0.1`)
+- `HF_CORTEX_PORT` (по умолчанию `9000`)
 
-2. В локальном приложении Bitrix24 укажите:
+## Запуск
 
-   - **Installation event handler URL**:  
-     `https://your-public-url.example.com/bitrix/events`
-
-### 1.5. Запуск бота
+### Node-сервис
 
 ```bash
-# дев-режим с перезапуском
 npm run dev
-
-# или обычный запуск
+# или
 node src/index.js
 ```
 
-Проверка здоровья:
+Проверка:
 
 ```bash
 curl http://localhost:8080/healthz
 ```
 
----
+### HF-Cortex (Python)
 
-## 2. Архитектура (упрощённо)
-
-**Поток сообщений:**
-
-1. Bitrix24 → HTTP webhook `/bitrix/events`
-2. `handler_llm_manager`:
-   - нормализует входящее сообщение;
-   - грузит/создаёт сессию диалога;
-   - вызывает LLM‑воронку (проход №1);
-   - при необходимости вызывает ABCP;
-   - вызывает LLM‑воронку (проход №2) с данными ABCP;
-   - обновляет CRM (лид + контакт);
-   - отправляет ответ клиенту через OpenLines API;
-   - логирует события в EventBus и COMMENTS лида.
-
-**Слои:**
-
-- `src/core/`
-  - `logger.js` — pino‑логгер
-  - `eventBus.js` — in‑memory EventBus HF‑OS
-  - `bitrixClient.js` — обёртка над REST Bitrix24
-  - `messageModel.js` — нормализация входящих сообщений
-- `src/modules/bot/`
-  - `handler_llm_manager.js` — входная точка для событий Bitrix
-  - `sessionStore.js` — хранение сессий (по portal + dialogId)
-- `src/modules/llm/`
-  - `openaiClient.js` — клиент OpenAI + строгий LLM‑контракт
-  - `llmFunnelEngine.js` — подготовка контекста, стадии, история
-- `src/modules/external/pricing/`
-  - `abcp.js` — интеграция с ABCP и нормализация результатов
-- `src/modules/crm/`
-  - `leads.js` — создание/обновление лида, product rows, COMMENTS‑лог
-  - `contactService.js` — работа с Контактами Bitrix24 (ФИО, телефон, адрес)
-
----
-
-## 3. LLM‑воронка и строгий контракт
-
-### 3.1. Общая идея
-
-LLM всегда возвращает **один JSON‑объект** без текста вокруг.  
-Это гарантируется `SYSTEM_PROMPT` в `openaiClient.js` и нормализатором `normalizeLLMResponse`.
-
-### 3.2. Формат ответа LLM
-
-Тип `LLMFunnelResponse` (упрощённо):
-
-```jsonc
-{
-  "action": "reply" | "abcp_lookup" | "ask_name" | "ask_phone" | "handover_operator",
-  "stage": "NEW" | "PRICING" | "CONTACT" | "FINAL",
-  "reply": "строка для клиента",
-  "need_operator": false,
-  "update_lead_fields": {
-    "NAME": "Иванов Иван",
-    "PHONE": "+7...",
-    "ADDRESS": "Москва, ..."
-  },
-  "client_name": "Иванов Иван",
-  "oems": ["A0000000000", "4N0907998"],
-
-  "product_rows": [
-    {
-      "PRODUCT_NAME": "Название позиции",
-      "PRICE": 12345.67,
-      "QUANTITY": 1,
-      "CURRENCY_ID": "RUB"
-    }
-  ],
-
-  "product_picks": [
-    {
-      "idx": 0,
-      "qty": 1,
-      "item": {
-        "oem": "A0000000000",
-        "brand": "MB",
-        "name": "Название детали",
-        "priceNum": 12345.67,
-        "daysText": "до 7 раб.дн."
-      }
-    }
-  ]
-}
+```bash
+cd hf_cortex_py
+.venv\Scripts\activate
+uvicorn app:app --host 127.0.0.1 --port 9000 --reload
 ```
 
-Ключевые моменты:
+### Windows helper scripts
 
-- `action="abcp_lookup"` — модель просит сделать запрос в ABCP по `oems`.
-- `action="reply"` — готовый ответ клиенту.
-- `ask_name` / `ask_phone` — стадии сбора контактов.
-- `handover_operator` — эскалация на живого менеджера (edge‑кейсы).
+- `dev.ps1` — локальный dev-пайплайн (туннель + запуск бота)
+- `start-tunnel-once.ps1` — старт Cloudflare Quick Tunnel
+- `run-bot.ps1` — локальный запуск Node-сервиса
+- `update-base-url.ps1` — обновление `BASE_URL` в `.env`
 
-Все «грязные»/нестабильные поля приводятся к контракту через:
+## Поток обработки (V2)
 
-- `normalizeLLMResponse`
-- `validateLLMFunnelResponse`
+1. Bitrix отправляет событие в `src/http/routes/bitrix.js`.
+2. Для `onimbotmessageadd` вызывается `processIncomingBitrixMessage` из `src/modules/bot/handler/index.js`.
+3. Оркестратор:
+   - сериализует обработку по `domain + dialogId`;
+   - собирает контекст (`context.js`);
+   - вычисляет gate-решение (`decision.js` + `leadDecisionGate.js`);
+   - запускает один из flows:
+     - `fastOemFlow.js`
+     - `cortexTwoPassFlow.js`
+     - `managerOemTriggerFlow.js`.
+4. Обновление CRM выполняет `safeUpdateLeadAndContact.js`.
+5. Ответ в чат отправляется через OpenLines API.
 
-Если LLM сломал JSON — клиент получает безопасный fallback‑ответ без падения сервера.
+## CRM-конфиг
 
----
+Файл: `src/config/settings.crm.js`
 
-## 4. ABCP интеграция
+Здесь задаются:
 
-Файл: `src/modules/external/pricing/abcp.js`
+- коды UF-полей (`leadFields`);
+- маппинг стадий `stage -> STATUS_ID` (`stageToStatusId`);
+- ручные статусы (`manualStatuses`), где чат-ответы подавляются (silent enrichment).
 
-- `/search/brands` — определяет бренд по OEM.
-- `/search/articles` — получает список предложений.
-- Нормализация:
-  - оставляет **оригинальные** позиции;
-  - парсит сроки через `deadlineReplace` / текстовые поля (`"до 7 раб.дн."`, `"до 18 дней"`);
-  - при отсутствии текстового срока использует числовые поля (`deliveryPeriod*`) как fallback;
-  - сортирует предложения по цене (от дешёвых к дорогим);
-  - возвращает структуру вида:
+## Хранилища и дампы
 
-    ```js
-    {
-      "A0000000000": {
-        offers: [
-          {
-            oem: "A0000000000",
-            brand: "MB",
-            name: "Оригинальное название",
-            priceNum: 9700,
-            daysText: "до 7 раб.дн.",
-            minDays: 5,
-            maxDays: 7
-          },
-          ...
-        ]
-      },
-      ...
-    }
-    ```
+- `data/portals.json` — OAuth токены порталов
+- `data/sessions/` — сессии диалогов
+- `data/events/` — дампы входящих Bitrix событий (если включено)
+- `data/cortex/` — дампы request/response Node <-> HF-Cortex (если включено)
+- `logs/` — логи приложения и утилит
 
-Эта структура передаётся во второй проход LLM через `llmFunnelEngine` (как `abcp` в контексте).
+## Тесты
 
----
-
-## 5. CRM‑слой (лиды и контакты)
-
-### 5.1. Настройки CRM
-
-Файл: `config/settings.crm.js`:
-
-```js
-export const crmSettings = {
-  sourceId: "OPENLINES",
-  leadFields: {
-    OEM: "UF_CRM_1762873310878" // поле для OEM-списка
-  },
-  stageToStatusId: {
-    NEW: "NEW",
-    PRICING: "IN_PROCESS",
-    CONTACT: "IN_PROCESS",
-    FINAL: "IN_PROCESS"
-  }
-};
-```
-
-### 5.2. Лиды (`src/modules/crm/leads.js`)
-
-- `createLeadsApi(rest)`:
-  - `createLeadFromSession` — создаёт лид из данных сессии;
-  - `updateLead` — частичное обновление полей лида;
-  - `setLeadStage` — маппит LLM‑стадии на `STATUS_ID`;
-  - `setProductRows` / `setProductRowsFromSelection` — записи товаров;
-  - `appendComment` — аккуратное добавление строк в `COMMENTS`;
-  - `ensureLeadForDialog` — гарантирует наличие лида для диалога.
-
-- `safeUpdateLeadAndContact(...)`:
-  - гарантирует лид (`ensureLeadForDialog`);
-  - обновляет поля лида по `LLMFunnelResponse` (имя, телефон, адрес, OEM, COMMENTS);
-  - двигает стадийность;
-  - пишет товары (если LLM уже отдаёт `product_rows` / `product_picks`);
-  - синхронизирует Контакт (через `ContactService`);
-  - добавляет **структурированную строку COMMENTS‑лога**.
-
-### 5.3. Контакты (`src/modules/crm/contactService.js`)
-
-- `parseFullName(full)` — грубый разбор ФИО `"Фамилия Имя Отчество"` → `NAME` / `LAST_NAME` / `SECOND_NAME`.
-- `normalizePhone(phoneRaw)` — нормализация телефона к формату Bitrix.
-- `findContactByPhone(phoneRaw)` — поиск контакта по телефону.
-- `createContact`, `updateContact` — работа с `crm.contact.*`.
-- `linkContactToLead` — установка `CONTACT_ID` у лида.
-- `syncContactFromLead` — основная функция синхронизации Контакта по данным лида/сессии.
-
----
-
-## 6. EventBus и COMMENTS‑лог
-
-### 6.1. EventBus (`src/core/eventBus.js`)
-
-Простой in‑memory EventBus с событиями:
-
-- `USER_MESSAGE` — входящее сообщение клиента;
-- `LLM_RESPONSE` — структурированный ответ LLM (pass=1/2);
-- `ABCP_RESULT` — итоговый результат ABCP‑поиска;
-- `OL_SEND` — исходящее сообщение бота в Открытые линии;
-- `SESSION_UPDATED` — обновление сессии;
-- `LEAD_CREATED`, `LEAD_UPDATED`, `LEAD_COMMENT_APPENDED`;
-- `PRODUCT_ROWS_SET`;
-- `CRM_SAFE_UPDATE_DONE`.
-
-EventBus сейчас используется как:
-
-- ядро логирования для HF‑аналитики;
-- заготовка под HF‑CaseStore / внешнюю шину (Kafka/Rabbit/БД).
-
-### 6.2. COMMENTS‑лог лида
-
-Каждый шаг LLM‑воронки порождает **компактную строку**, которая добавляется в `COMMENTS`:
-
-```text
-[2025-11-24T09:33:12.345Z] stage=PRICING action=abcp_lookup name="Иван Иванов" phone="+7900..." msg="нужны колодки..." reply="Вот варианты..." oems="A123...,4N09..."
-```
-
-Это даёт:
-
-- быстрый просмотр истории прямо в карточке лида;
-- материал для HF‑аналитики (HF‑OS уровень);
-- прозрачность работы бота для менеджеров.
-
----
-
-## 7. Тесты (unit‑уровень)
-
-Тесты написаны на встроенном `node:test` (без дополнительных библиотек).
-
-Файлы:
-
-- `src/tests/llmContract.test.js`
-  - тестирует:
-    - `normalizeLLMResponse`
-    - `validateLLMFunnelResponse`
-    - поведение на валидных/битых ответах, старом формате `response` и т.п.
-
-- `src/tests/crmMapping.test.js`
-  - тестирует:
-    - `buildLeadFieldsFromSession`
-    - `parseFullNameStandalone` (из `contactService`)
-
-Запуск:
+Node:
 
 ```bash
 npm test
-# под капотом:
-# node --test src/tests/**/*.test.js
 ```
 
----
+Python:
 
-## 8. Дальнейший roadmap (HF‑OS)
+```bash
+cd hf_cortex_py
+pytest -q
+```
 
-Текущий статус ядра:
+Примечание: часть Python replay-тестов использует реальный вызов LLM и требует `OPENAI_API_KEY`.
 
-- LLM‑контракт — строгий, нормализуемый и валидируемый;
-- CRM‑слой вынесен в сервисы (`LeadsApi`, `ContactService`);
-- EventBus — централизованная шина событий;
-- COMMENTS‑лог — структурирован и пригоден для HF‑аналитики;
-- Unit‑тесты покрывают ключевые точки (LLM‑контракт + CRM‑маппинг).
+## Линт
 
-План развития:
+```bash
+npm run lint
+```
 
-1. **HF‑CaseStore** — отдельный модуль, который:
-   - собирает события EventBus в «кейсы» диалогов;
-   - сохраняет их в файлы/БД;
-   - готовит фичи для HF‑аналитики и обучения.
-
-2. **HF‑Супер‑Продавец**
-   - HF‑фичи для LLM (HF‑метрики, вероятности закрытия, паттерны поведения);
-   - персонализация ответов и стратегии продаж.
-
-3. **HF‑индексация и аналитика**
-   - агрегирование кейсов;
-   - поиск по похожим сценариям;
-   - отчёты по конверсии бота/менеджеров.
-
-4. **BPM, геймификация, DI/DDD**
-   - вынесение доменной логики в отдельные bounded contexts;
-   - DI‑контейнер для конфигурируемости;
-   - игровой слой (очки, задачи, рейтинги для менеджеров).
-
----
-
-## 9. Безопасность
-
-- `.env`, `data/portals.json`, `data/sessions/` и `logs/` находятся в `.gitignore`.
-- Рекомендуется:
-  - не хранить реальные ключи в репозитории;
-  - использовать pre‑commit hooks для проверки на секреты;
-  - ограничивать доступ к токен‑файлам и логам.
-
----
-
-## 10. Лицензия
-
-Внутренний проект компании **Rozatti / HF‑Technologies**.  
-Использование вне компании требует отдельного согласования.

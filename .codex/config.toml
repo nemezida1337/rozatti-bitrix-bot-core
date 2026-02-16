@@ -1,0 +1,3 @@
+# Minimal-risk defaults for this repo
+approval_policy = "untrusted"
+sandbox_mode = "workspace-write"

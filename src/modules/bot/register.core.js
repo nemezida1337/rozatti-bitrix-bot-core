@@ -18,7 +18,15 @@ function getBotConfig() {
 function botEventsUrl() {
   const base = process.env.BASE_URL || "";
   if (!base) throw new Error("BASE_URL is not set");
-  return `${base.replace(/\/+$/, "")}/bitrix/events`;
+  const url = `${base.replace(/\/+$/, "")}/bitrix/events`;
+
+  // P0: если включён секрет для вебхуков — автоматически прокидываем его в URL,
+  // чтобы Bitrix присылал события на тот же endpoint.
+  const secret = process.env.BITRIX_EVENTS_SECRET || "";
+  if (secret) {
+    return `${url}?secret=${encodeURIComponent(secret)}`;
+  }
+  return url;
 }
 
 export async function ensureBotRegistered(domain) {

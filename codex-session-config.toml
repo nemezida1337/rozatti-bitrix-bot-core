@@ -1,0 +1,9 @@
+# Codex session settings for full local audit access
+# Use this as a template in your runner/session config.
+
+sandbox_mode = "danger-full-access"
+approval_policy = "on-request"
+network_access = true
+
+# Optional if your runner supports writable roots explicitly.
+# writable_roots = ["C:\\BitrixBot\\bitrix-bot-core"]
