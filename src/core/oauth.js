@@ -1,8 +1,15 @@
+// @ts-check
+
 import { logger } from "./logger.js";
 import { getPortal, upsertPortal } from "./store.js";
 
+/** @type {Map<string, Promise<string>>} */
 const _pending = new Map(); // чтобы не было параллельных refresh по одному домену
 
+/**
+ * @param {string} domain
+ * @returns {Promise<string>}
+ */
 export async function refreshTokens(domain) {
   const portal = getPortal(domain);
   if (!portal?.refreshToken) throw new Error("No refresh_token saved for domain " + domain);
@@ -20,7 +27,7 @@ export async function refreshTokens(domain) {
       grant_type: "refresh_token",
       client_id: clientId,
       client_secret: clientSecret,
-      refresh_token: portal.refreshToken
+      refresh_token: portal.refreshToken,
     });
 
     // по докам Bitrix24 refresh в облаке через oauth.bitrix.info/oauth/token/
@@ -41,7 +48,7 @@ export async function refreshTokens(domain) {
       // expires_in — сек; сохраним timestamp для упреждающего обновления
       expires: json.expires_in,
       expiresAt: Date.now() + Number(json.expires_in || 3600) * 1000,
-      baseUrl: json.client_endpoint || portal.baseUrl
+      baseUrl: json.client_endpoint || portal.baseUrl,
     };
     upsertPortal(domain, next);
     logger.info({ domain }, "OAuth refresh ok");
