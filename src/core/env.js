@@ -1,3 +1,5 @@
+// @ts-check
+
 // src/core/env.js
 // Загрузка .env и удобные константы окружения.
 
@@ -28,6 +30,7 @@ export const isDev = NODE_ENV !== "production";
 export const PORT = Number(process.env.PORT || 8080);
 
 // Уровень логирования: error < warn < info < debug
+/** @type {"error"|"warn"|"info"|"debug"|string} */
 export const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 
 // Базовый публичный URL (туннель)
