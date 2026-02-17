@@ -10,7 +10,7 @@
     "lint:fix": "eslint src --ext .js --fix",
     "format": "prettier --write \"src/**/*.js\"",
     "test": "node --test",
-    "test:coverage": "node --test --experimental-test-coverage"
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-lines=55 --test-coverage-branches=50 --test-coverage-functions=70"
   },
   "dependencies": {
     "axios": "^1.13.2",
