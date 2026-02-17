@@ -1,3 +1,5 @@
+// @ts-check
+
 // src/http/routes/bitrix.js
 
 import fs from "node:fs/promises";
@@ -17,6 +19,9 @@ import {
 const EVENTS_SECRET = process.env.BITRIX_EVENTS_SECRET || null;
 const VALIDATE_APP_TOKEN = process.env.BITRIX_VALIDATE_APP_TOKEN === "1";
 
+/** @typedef {Record<string, any>} AnyRecord */
+
+/** @param {string} event */
 function isInstallEvent(event) {
   if (!event) return false;
   const e = String(event).toLowerCase();
@@ -27,6 +32,7 @@ function isInstallEvent(event) {
   );
 }
 
+/** @param {AnyRecord} [body] */
 function extractDomain(body = {}) {
   // onappinstall — auth снаружи
   if (body?.auth?.domain) return body.auth.domain;
@@ -39,6 +45,7 @@ function extractDomain(body = {}) {
   return null;
 }
 
+/** @param {AnyRecord} [body] */
 function extractAuth(body = {}) {
   // onappinstall — auth снаружи
   if (body?.auth) return body.auth;
@@ -48,6 +55,7 @@ function extractAuth(body = {}) {
   return null;
 }
 
+/** @param {AnyRecord} [auth] */
 function extractApplicationToken(auth = {}) {
   if (!auth) return null;
   return (
@@ -58,6 +66,7 @@ function extractApplicationToken(auth = {}) {
   );
 }
 
+/** @param {AnyRecord} [auth] */
 function normalizeBitrixAuth(auth = {}) {
   // Bitrix обычно шлёт snake_case, мы храним camelCase для rest-клиента.
   const out = {};
@@ -91,6 +100,11 @@ function normalizeBitrixAuth(auth = {}) {
   return out;
 }
 
+/**
+ * @param {AnyRecord} req
+ * @param {AnyRecord} reply
+ * @param {string} event
+ */
 function validateEventsSecret(req, reply, event) {
   if (!EVENTS_SECRET) return true;
 
@@ -122,26 +136,33 @@ function shouldDumpEvent(event) {
   );
 }
 
+/** @param {unknown} s */
 function maskPhonesAndEmails(s) {
   if (typeof s !== "string") return s;
+  let text = s;
 
   // emails
-  s = s.replace(
+  text = text.replace(
     /([A-Z0-9._%+-]{1,3})[A-Z0-9._%+-]*(@[A-Z0-9.-]+\.[A-Z]{2,})/gi,
     "$1***$2"
   );
 
   // phone-like sequences: +7 999 123-45-67 etc
-  s = s.replace(/(\+?\d[\d\s().-]{6,}\d)/g, (m) => {
+  text = text.replace(/(\+?\d[\d\s().-]{6,}\d)/g, (m) => {
     const digits = m.replace(/\D/g, "");
     if (digits.length < 7) return m;
     const last2 = digits.slice(-2);
     return `+${"X".repeat(Math.max(0, digits.length - 2))}${last2}`;
   });
 
-  return s;
+  return text;
 }
 
+/**
+ * @param {unknown} value
+ * @param {string} [key]
+ * @returns {unknown}
+ */
 function sanitizeDeep(value, key = "") {
   // маскируем секреты по имени ключа
   const k = String(key || "").toLowerCase();
@@ -159,7 +180,8 @@ function sanitizeDeep(value, key = "") {
 
   if (typeof value === "string") {
     // подмаскируем возможные телефоны/почты в тексте
-    let s = maskPhonesAndEmails(value);
+    let s = /** @type {string} */ (maskPhonesAndEmails(value));
+    if (typeof s !== "string") s = String(s ?? "");
 
     // ограничим длину, чтобы не раздувать файлы
     if (s.length > 5000) s = s.slice(0, 5000) + "…(truncated)";
@@ -173,6 +195,7 @@ function sanitizeDeep(value, key = "") {
   }
 
   if (typeof value === "object") {
+    /** @type {AnyRecord} */
     const out = {};
     for (const [kk, vv] of Object.entries(value)) {
       out[kk] = sanitizeDeep(vv, kk);
@@ -183,6 +206,9 @@ function sanitizeDeep(value, key = "") {
   return value;
 }
 
+/**
+ * @param {{event: string, domain: string|null, body: AnyRecord}} payload
+ */
 async function dumpBitrixEventToFile({ event, domain, body }) {
   if (!EVENT_DUMP_ENABLED) return;
   if (!shouldDumpEvent(event)) return;
@@ -206,9 +232,10 @@ async function dumpBitrixEventToFile({ event, domain, body }) {
   await fs.writeFile(filepath, JSON.stringify(payload, null, 2), "utf-8");
 }
 
+/** @param {import("fastify").FastifyInstance} app */
 export async function registerRoutes(app) {
   app.post("/bitrix/events", async (req, reply) => {
-    const body = req.body || {};
+    const body = /** @type {AnyRecord} */ (req.body || {});
     const rawEvent = body?.event || "";
     const event = String(rawEvent || "").toLowerCase();
 

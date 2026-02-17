@@ -10,9 +10,17 @@ import { logger } from "./logger.js";
  * @property {string} [domain]
  * @property {string} [baseUrl]
  * @property {string} [accessToken]
+ * @property {string} [access_token]
  * @property {string} [refreshToken]
+ * @property {string} [refresh_token]
  * @property {string|number} [expires]
  * @property {number} [expiresAt]
+ * @property {string} [memberId]
+ * @property {string} [member_id]
+ * @property {string} [applicationToken]
+ * @property {string} [application_token]
+ * @property {string} [userId]
+ * @property {string|number} [user_id]
  * @property {string} [updatedAt]
  */
 
