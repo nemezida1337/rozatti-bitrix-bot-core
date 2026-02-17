@@ -37,6 +37,34 @@ def test_choice_and_qty_do_not_conflict():
     assert extract_offer_choice_from_text("вариант 2", valid) == 2
 
 
+def test_quantity_parses_x_formats():
+    assert extract_quantity_from_text("беру x2") == 2
+    assert extract_quantity_from_text("беру 3x") == 3
+
+
+def test_strict_funnel_applies_quantity_to_chosen_offer():
+    result = CortexResult(
+        action="reply",
+        stage="CONTACT",
+        reply="",
+        offers=[Offer(id=1, price=1000.0), Offer(id=2, price=2000.0)],
+        chosen_offer_id=None,
+        update_lead_fields={},
+    )
+
+    out = apply_strict_funnel(
+        result,
+        stage_in="CONTACT",
+        msg_text="вариант 2 x3",
+        session_snapshot={},
+    )
+
+    assert out.chosen_offer_id == 2
+    assert out.offers[0].quantity == 1
+    assert out.offers[1].quantity == 3
+    assert (out.meta or {}).get("requested_qty") == 3
+
+
 def test_strict_funnel_moves_to_final_on_address_when_contact_ready():
     # Если на входе ADDRESS и уже есть ФИО/телефон в сессии, а в сообщении адрес —
     # hardening должен перевести в FINAL.
@@ -59,3 +87,24 @@ def test_strict_funnel_moves_to_final_on_address_when_contact_ready():
 
     assert out.stage == "FINAL"
     assert out.update_lead_fields.get("DELIVERY_ADDRESS") == "Самовывоз"
+
+
+def test_strict_funnel_contact_does_not_set_delivery_address_from_fio_phone():
+    result = CortexResult(
+        action="reply",
+        stage="CONTACT",
+        reply="",
+        offers=[Offer(id=1, price=1.0)],
+        chosen_offer_id=1,
+        update_lead_fields={},
+    )
+
+    out = apply_strict_funnel(
+        result,
+        stage_in="CONTACT",
+        msg_text="Иванов Иван Иванович +79990001122",
+        session_snapshot={},
+    )
+
+    assert out.stage == "ADDRESS"
+    assert "DELIVERY_ADDRESS" not in (out.update_lead_fields or {})
