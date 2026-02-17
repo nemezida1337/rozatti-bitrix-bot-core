@@ -1,7 +1,26 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import { logger } from "../core/logger.js";
+
+function runNodeModuleSnippet(code, extraEnv = {}) {
+  const res = spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", code],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, ...extraEnv },
+      encoding: "utf8",
+    },
+  );
+
+  if (res.error) throw res.error;
+  return {
+    status: res.status,
+    output: `${res.stdout || ""}\n${res.stderr || ""}`,
+  };
+}
 
 test("bitrix route: should not log raw request body on missing domain", async () => {
   process.env.BITRIX_EVENTS_SECRET = "audit-secret";
@@ -51,61 +70,42 @@ test("bitrix route: should not log raw request body on missing domain", async ()
 });
 
 test("abcp module: should not log credentials in startup config log", async () => {
-  process.env.ABCP_DOMAIN = "example.abcp.test";
-  process.env.ABCP_KEY = "abcp-login-secret";
-  process.env.ABCP_USERPSW_MD5 = "abcp-password-secret";
+  const secretLogin = "abcp-login-secret";
+  const secretPassword = "abcp-password-secret";
+  const { status, output } = runNodeModuleSnippet(
+    `await import("./src/modules/external/pricing/abcp.js");`,
+    {
+      ABCP_DOMAIN: "example.abcp.test",
+      ABCP_KEY: secretLogin,
+      ABCP_USERPSW_MD5: secretPassword,
+    },
+  );
 
-  const infoCalls = [];
-  const originalInfo = logger.info;
-  logger.info = (ctxOrMsg, maybeMsg) => {
-    infoCalls.push({ ctxOrMsg, maybeMsg });
-    return originalInfo(ctxOrMsg, maybeMsg);
-  };
-
-  try {
-    await import(`../modules/external/pricing/abcp.js?audit=${Date.now()}`);
-
-    const configLog = infoCalls.find(
-      (x) => x.maybeMsg === "ABCP конфиг загружен",
-    );
-    assert.ok(configLog, "Expected ABCP startup config log");
-
-    const ctx = configLog.ctxOrMsg || {};
-    assert.equal(
-      Object.prototype.hasOwnProperty.call(ctx, "ABCP_LOGIN"),
-      false,
-      "ABCP_LOGIN must not be included in logs",
-    );
-  } finally {
-    logger.info = originalInfo;
-  }
+  assert.equal(status, 0);
+  assert.match(output, /ABCP конфиг загружен/);
+  assert.doesNotMatch(output, new RegExp(secretLogin));
+  assert.doesNotMatch(output, new RegExp(secretPassword));
 });
 
 test("abcp module: should redact credentials in error logs params", async () => {
-  process.env.ABCP_DOMAIN = "127.0.0.1:1";
-  process.env.ABCP_KEY = "abcp-login-secret";
-  process.env.ABCP_USERPSW_MD5 = "abcp-password-secret";
+  const secretLogin = "abcp-login-secret";
+  const secretPassword = "abcp-password-secret";
+  const { status, output } = runNodeModuleSnippet(
+    `
+      const mod = await import("./src/modules/external/pricing/abcp.js");
+      await mod.searchManyOEMs(["ABC12345"]);
+    `,
+    {
+      ABCP_DOMAIN: "127.0.0.1:1",
+      ABCP_KEY: secretLogin,
+      ABCP_USERPSW_MD5: secretPassword,
+    },
+  );
 
-  const errorCalls = [];
-  const originalError = logger.error;
-  logger.error = (ctxOrMsg, maybeMsg) => {
-    errorCalls.push({ ctxOrMsg, maybeMsg });
-    return originalError(ctxOrMsg, maybeMsg);
-  };
-
-  try {
-    const mod = await import(`../modules/external/pricing/abcp.js?audit=${Date.now()}-err`);
-    await mod.searchManyOEMs(["ABC12345"]);
-
-    const brandsError = errorCalls.find((x) => x.maybeMsg === "Ошибка queryBrands");
-    assert.ok(brandsError, "Expected queryBrands error log");
-
-    const params = brandsError.ctxOrMsg?.params || {};
-    assert.equal(params.userpsw, "***");
-    assert.equal(params.userlogin, "***");
-    assert.notEqual(params.userpsw, "abcp-password-secret");
-    assert.notEqual(params.userlogin, "abcp-login-secret");
-  } finally {
-    logger.error = originalError;
-  }
+  assert.equal(status, 0);
+  assert.match(output, /Ошибка queryBrands/);
+  assert.match(output, /userlogin: '\*\*\*'/);
+  assert.match(output, /userpsw: '\*\*\*'/);
+  assert.doesNotMatch(output, new RegExp(secretLogin));
+  assert.doesNotMatch(output, new RegExp(secretPassword));
 });

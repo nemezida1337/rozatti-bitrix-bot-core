@@ -8,48 +8,62 @@ export * from "./register.core.js";
 import { processIncomingBitrixMessage } from "./handler/index.js";
 import * as core from "./register.core.js";
 
-// Новый LLM-хендлер (подменяет старый)
+function makeEnsureFallback() {
+  return async (...args) => {
+    console.warn(
+      "[LLM] ensureBotRegistered not found in register.core.js, noop called",
+      args
+    );
+  };
+}
 
-// --- Достаём функции из core ---
-// Могут быть либо named-экспортами, либо лежать в default-объекте.
+function makeCommandFallback() {
+  return async (...args) => {
+    console.warn(
+      "[LLM] handleOnImCommandAdd not found in register.core.js, noop called",
+      args
+    );
+  };
+}
 
-const ensureBotRegisteredCore =
-  core.ensureBotRegistered || core.default?.ensureBotRegistered;
+export function resolveRegisterExports(coreModule, llmHandler) {
+  const ensureBotRegisteredCore =
+    coreModule.ensureBotRegistered || coreModule.default?.ensureBotRegistered;
 
-const handleOnImCommandAddCore =
-  core.handleOnImCommandAdd || core.default?.handleOnImCommandAdd;
+  const handleOnImCommandAddCore =
+    coreModule.handleOnImCommandAdd || coreModule.default?.handleOnImCommandAdd;
+
+  const ensureBotRegistered =
+    ensureBotRegisteredCore || makeEnsureFallback();
+
+  const handleOnImCommandAdd =
+    handleOnImCommandAddCore || makeCommandFallback();
+
+  let defaultExport = coreModule.default;
+  if (defaultExport && typeof defaultExport === "object") {
+    defaultExport = {
+      ...defaultExport,
+      handleOnImBotMessageAdd: llmHandler,
+      ensureBotRegistered:
+        ensureBotRegisteredCore || defaultExport.ensureBotRegistered,
+      handleOnImCommandAdd:
+        handleOnImCommandAddCore || defaultExport.handleOnImCommandAdd,
+    };
+  }
+
+  return {
+    ensureBotRegistered,
+    handleOnImCommandAdd,
+    defaultExport,
+  };
+}
+
+const resolved = resolveRegisterExports(core, processIncomingBitrixMessage);
 
 // Подменяем только обработчик входящих сообщений
 export const handleOnImBotMessageAdd = processIncomingBitrixMessage;
 
 // Остальные функции пробрасываем из core
-export const ensureBotRegistered =
-  ensureBotRegisteredCore ||
-  (async (...args) => {
-    console.warn(
-      "[LLM] ensureBotRegistered not found in register.core.js, noop called",
-      args
-    );
-  });
-
-export const handleOnImCommandAdd =
-  handleOnImCommandAddCore ||
-  (async (...args) => {
-    console.warn(
-      "[LLM] handleOnImCommandAdd not found in register.core.js, noop called",
-      args
-    );
-  });
-
-// Default экспорт — на случай, если где-то импортят default
-let _default = core.default;
-if (_default && typeof _default === "object") {
-  _default = {
-    ..._default,
-    handleOnImBotMessageAdd: processIncomingBitrixMessage,
-    ensureBotRegistered: ensureBotRegisteredCore || _default.ensureBotRegistered,
-    handleOnImCommandAdd:
-      handleOnImCommandAddCore || _default.handleOnImCommandAdd,
-  };
-}
-export default _default;
+export const ensureBotRegistered = resolved.ensureBotRegistered;
+export const handleOnImCommandAdd = resolved.handleOnImCommandAdd;
+export default resolved.defaultExport;

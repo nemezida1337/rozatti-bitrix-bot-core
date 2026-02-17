@@ -26,6 +26,7 @@ logs/
 
 # === Runtime-данные бота ===
 data/portals.json
+data/portals.*.test.json
 data/sessions/
 data/tmp/
 cache/

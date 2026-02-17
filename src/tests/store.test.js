@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
+import { logger } from "../core/logger.js";
 import { getPortal, loadStore, saveStore, upsertPortal } from "../core/store.js";
 
 process.env.TOKENS_FILE = "./data/portals.store.test.json";
@@ -69,6 +70,87 @@ test("store: saveStore does not leave temporary files", () => {
     const json = fs.readFileSync(STORE_PATH, "utf8");
     assert.doesNotThrow(() => JSON.parse(json));
   } finally {
+    restoreStoreFile(backup);
+  }
+});
+
+test("store: saveStore fallback rename path handles EEXIST/EPERM/EBUSY", () => {
+  const backup = backupStoreFile();
+  const originalRename = fs.renameSync;
+  const originalRm = fs.rmSync;
+
+  let renameCalls = 0;
+  let removedMainFile = false;
+
+  try {
+    if (!fs.existsSync(STORE_DIR)) fs.mkdirSync(STORE_DIR, { recursive: true });
+    fs.writeFileSync(STORE_PATH, "{}", "utf8");
+
+    fs.renameSync = (...args) => {
+      renameCalls += 1;
+      if (renameCalls === 1) {
+        const err = new Error("busy");
+        err.code = "EBUSY";
+        throw err;
+      }
+      return originalRename(...args);
+    };
+
+    fs.rmSync = (target, opts) => {
+      if (path.resolve(String(target)) === STORE_PATH) removedMainFile = true;
+      return originalRm(target, opts);
+    };
+
+    saveStore({
+      "audit-store-fallback.bitrix24.ru": {
+        accessToken: "token-fallback",
+      },
+    });
+
+    const saved = JSON.parse(fs.readFileSync(STORE_PATH, "utf8"));
+    assert.ok(saved["audit-store-fallback.bitrix24.ru"]);
+    assert.equal(renameCalls, 2);
+    assert.equal(removedMainFile, true);
+  } finally {
+    fs.renameSync = originalRename;
+    fs.rmSync = originalRm;
+    restoreStoreFile(backup);
+  }
+});
+
+test("store: saveStore logs error when write fails and cleanup error is ignored", () => {
+  const backup = backupStoreFile();
+  const originalWrite = fs.writeFileSync;
+  const originalRm = fs.rmSync;
+  const originalError = logger.error;
+
+  let errorLogged = false;
+
+  try {
+    fs.writeFileSync = () => {
+      throw new Error("write failed");
+    };
+    fs.rmSync = () => {
+      throw new Error("cleanup failed");
+    };
+    logger.error = (ctxOrObj, msg) => {
+      if (msg === "Failed to save token store") errorLogged = true;
+      return originalError(ctxOrObj, msg);
+    };
+
+    assert.doesNotThrow(() => {
+      saveStore({
+        "audit-store-write-fail.bitrix24.ru": {
+          accessToken: "token",
+        },
+      });
+    });
+
+    assert.equal(errorLogged, true);
+  } finally {
+    fs.writeFileSync = originalWrite;
+    fs.rmSync = originalRm;
+    logger.error = originalError;
     restoreStoreFile(backup);
   }
 });

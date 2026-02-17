@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
 import test from "node:test";
 
 import { normalizeIncomingMessage } from "../core/messageModel.js";
@@ -10,6 +12,14 @@ import { crmSettings } from "../modules/settings.crm.js";
 process.env.TOKENS_FILE = "./data/portals.auditGuards.test.json";
 process.env.BITRIX_EVENTS_SECRET = "audit-secret";
 process.env.BITRIX_VALIDATE_APP_TOKEN = "1";
+process.env.EVENT_DUMP = "1";
+process.env.EVENT_DUMP_DIR = "./data/events.auditGuards.test";
+
+const DUMP_DIR = path.resolve(process.cwd(), process.env.EVENT_DUMP_DIR);
+
+function resetDumpDir() {
+  fs.rmSync(DUMP_DIR, { recursive: true, force: true });
+}
 
 async function startFakeInstallBitrix() {
   const server = http.createServer((req, res) => {
@@ -321,6 +331,94 @@ test("bitrix/events: parses nested data[AUTH] from x-www-form-urlencoded", async
   } finally {
     await fake.close();
     await app.close();
+  }
+});
+
+test("bitrix/events: dumps supported events with sanitized payload", async () => {
+  resetDumpDir();
+  const { buildServer } = await import("../core/app.js");
+  const app = await buildServer();
+
+  const domain = "audit-dump-install.bitrix24.ru";
+  const note = `user@example.com +7 (999) 111-22-33 ${"A".repeat(6000)}`;
+
+  try {
+    const res = await app.inject({
+      method: "POST",
+      url: "/bitrix/events",
+      payload: {
+        event: "onappinstall",
+        meta: [{ email: "meta@example.com", phone: "+7 999 888-77-66" }],
+        auth: {
+          domain,
+          access_token: "access-secret-value",
+          refresh_token: "refresh-secret-value",
+          application_token: "app-secret-token",
+          client_endpoint: "http://127.0.0.1:1/rest",
+          note,
+        },
+      },
+    });
+
+    assert.equal(res.statusCode, 200);
+
+    const files = fs.readdirSync(DUMP_DIR).filter((f) => f.includes(domain));
+    assert.ok(files.length >= 1);
+
+    const payload = JSON.parse(fs.readFileSync(path.join(DUMP_DIR, files[0]), "utf8"));
+    const dumpedAuth = payload.body?.auth || {};
+    const dumpedMeta = payload.body?.meta || [];
+
+    assert.equal(dumpedAuth.access_token, "***");
+    assert.equal(dumpedAuth.refresh_token, "***");
+    assert.equal(dumpedAuth.application_token, "***");
+    assert.match(String(dumpedAuth.note), /\*\*\*@example\.com/i);
+    assert.doesNotMatch(String(dumpedAuth.note), /111-22-33/);
+    assert.match(String(dumpedAuth.note), /\(truncated\)/);
+    assert.equal(Array.isArray(dumpedMeta), true);
+    assert.match(String(dumpedMeta[0]?.email || ""), /\*\*\*@example\.com/i);
+    assert.doesNotMatch(String(dumpedMeta[0]?.phone || ""), /888-77-66/);
+  } finally {
+    await app.close();
+    resetDumpDir();
+  }
+});
+
+test("bitrix/events: does not dump unsupported events", async () => {
+  resetDumpDir();
+  const { buildServer } = await import("../core/app.js");
+  const app = await buildServer();
+  const domain = "audit-dump-noop.bitrix24.ru";
+
+  upsertPortal(domain, {
+    domain,
+    baseUrl: `https://${domain}/rest/`,
+    accessToken: "token",
+    refreshToken: "refresh",
+    applicationToken: "app-token",
+  });
+
+  try {
+    const res = await app.inject({
+      method: "POST",
+      url: "/bitrix/events?secret=audit-secret",
+      payload: {
+        event: "onimbotmessageupdate",
+        data: {
+          AUTH: {
+            domain,
+            application_token: "app-token",
+          },
+        },
+      },
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.match(res.body, /"result":"noop"/);
+    assert.equal(fs.existsSync(DUMP_DIR), false);
+  } finally {
+    await app.close();
+    resetDumpDir();
   }
 });
 
