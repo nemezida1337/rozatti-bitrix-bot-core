@@ -1,3 +1,5 @@
+// @ts-check
+
 // src/modules/bot/register.core.js
 
 import { makeBitrixClient } from "../../core/bitrixClient.js";
@@ -7,6 +9,30 @@ import { sendWelcome } from "../openlines/api.js";
 // Раньше здесь был tryHandleOemMessage, теперь ABCP используется только как поиск в LLM-обработчике
 // import { tryHandleSelectionMessage } from "../external/pricing/abcp.js";
 
+/** @typedef {Record<string, any>} AnyRecord */
+
+/**
+ * @typedef {Object} BotConfig
+ * @property {string} CODE
+ * @property {string} NAME
+ * @property {string} OPENLINES_WELCOME
+ */
+
+/**
+ * @typedef {Object} PortalAuth
+ * @property {string} [domain]
+ * @property {string} [baseUrl]
+ * @property {string} [accessToken]
+ */
+
+/**
+ * @typedef {Object} HandlerInput
+ * @property {AnyRecord} body
+ * @property {PortalAuth} portal
+ * @property {string} domain
+ */
+
+/** @returns {BotConfig} */
 function getBotConfig() {
   return {
     CODE: process.env.BOT_CODE || "ram_parts_bot",
@@ -15,6 +41,7 @@ function getBotConfig() {
   };
 }
 
+/** @returns {string} */
 function botEventsUrl() {
   const base = process.env.BASE_URL || "";
   if (!base) throw new Error("BASE_URL is not set");
@@ -29,6 +56,7 @@ function botEventsUrl() {
   return url;
 }
 
+/** @param {string} domain */
 export async function ensureBotRegistered(domain) {
   const portal = getPortal(domain);
   if (!portal) throw new Error("Unknown portal: " + domain);
@@ -108,6 +136,7 @@ export async function ensureBotRegistered(domain) {
 }
 
 // Утилита: извлечь CHAT_ID из DIALOG_ID типа "chat12345" (нужно для некоторых методов ОЛ)
+/** @param {string|undefined|null} dialogId */
 function getChatIdFromDialogId(dialogId) {
   if (typeof dialogId !== "string") return null;
   if (dialogId.startsWith("chat")) {
@@ -119,6 +148,7 @@ function getChatIdFromDialogId(dialogId) {
 
 // Обработка нового сообщения (ONIMBOTMESSAGEADD) — "старый" простой контур
 // (LLM-контур реализован в handler_llm_manager.js и вешается отдельно через обёртку register.js)
+/** @param {HandlerInput} input */
 export async function handleOnImBotMessageAdd({ body, portal, domain }) {
   const api = makeBitrixClient({
     domain,
@@ -170,6 +200,7 @@ export async function handleOnImBotMessageAdd({ body, portal, domain }) {
 }
 
 // Обработка команд (ONIMCOMMANDADD) — EchoBot-подобный ответ
+/** @param {HandlerInput} input */
 export async function handleOnImCommandAdd({ body, portal, domain }) {
   const api = makeBitrixClient({
     domain,
