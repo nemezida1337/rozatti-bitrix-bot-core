@@ -58,4 +58,4 @@ jobs:
         run: pytest hf_cortex_py/tests -q
 
       - name: Python Coverage
-        run: pytest hf_cortex_py/tests --cov=core --cov=flows --cov-report=term-missing --cov-fail-under=85 -q
+        run: pytest hf_cortex_py/tests --cov=core --cov=flows --cov-report=term-missing --cov-fail-under=88 -q

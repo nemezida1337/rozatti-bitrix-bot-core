@@ -3,6 +3,7 @@ from core.models import CortexResult, Offer
 from flows.lead_sales.hardening import apply_strict_funnel
 from flows.lead_sales.parsers.address import extract_address_or_pickup_raw
 from flows.lead_sales.parsers.choice import extract_offer_choice_from_text
+from flows.lead_sales.parsers.phone import extract_phone_from_text
 from flows.lead_sales.parsers.quantity import extract_quantity_from_text
 
 
@@ -40,6 +41,21 @@ def test_choice_and_qty_do_not_conflict():
 def test_quantity_parses_x_formats():
     assert extract_quantity_from_text("беру x2") == 2
     assert extract_quantity_from_text("беру 3x") == 3
+
+
+def test_quantity_handles_empty_and_clamps():
+    assert extract_quantity_from_text("") is None
+    assert extract_quantity_from_text(None) is None
+    assert extract_quantity_from_text("беру 0 шт") == 1
+    assert extract_quantity_from_text("беру x150") == 99
+
+
+def test_phone_parser_variants():
+    assert extract_phone_from_text("+7 (999) 000-11-22") == "+79990001122"
+    assert extract_phone_from_text("8 999 000 11 22") == "+79990001122"
+    assert extract_phone_from_text("9990001122") == "+79990001122"
+    assert extract_phone_from_text("no phone") is None
+    assert extract_phone_from_text(None) is None
 
 
 def test_strict_funnel_applies_quantity_to_chosen_offer():
