@@ -1,3 +1,5 @@
+// @ts-check
+
 import Fastify from "fastify";
 import fastifyRawBody from "fastify-raw-body";
 
@@ -5,6 +7,9 @@ import { registerRoutes } from "../http/routes/bitrix.js";
 
 import { logger } from "./logger.js";
 
+/** @typedef {Record<string, any>} AnyObject */
+
+/** @returns {Promise<import("fastify").FastifyInstance>} */
 export async function buildServer() {
   const app = Fastify({ logger: false });
 
@@ -13,16 +18,19 @@ export async function buildServer() {
   // Поддержка application/x-www-form-urlencoded (как шлёт Bitrix для ONAPPINSTALL и др.)
   app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (req, body, done) => {
     try {
-      const params = new URLSearchParams(body);
+      const rawBody = typeof body === "string" ? body : String(body ?? "");
+      const params = new URLSearchParams(rawBody);
+      /** @type {AnyObject} */
       const out = {};
       // Преобразуем php-style ключи вида a[b][c] -> out.a.b.c
       for (const [k, v] of params) {
         const keys = k.replace(/\]/g, "").split("["); // "auth[access_token]" -> ["auth","access_token"]
+        /** @type {AnyObject} */
         let cur = out;
         for (let i = 0; i < keys.length - 1; i++) {
           const key = keys[i];
           if (!(key in cur)) cur[key] = {};
-          cur = cur[key];
+          cur = /** @type {AnyObject} */ (cur[key]);
         }
         cur[keys[keys.length - 1]] = v;
       }
