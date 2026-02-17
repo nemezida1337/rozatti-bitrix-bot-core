@@ -6,6 +6,8 @@ import { crmSettings } from "../config/settings.crm.js";
 import { upsertPortal } from "../core/store.js";
 import { safeUpdateLeadAndContact } from "../modules/crm/leads.js";
 
+process.env.TOKENS_FILE = "./data/portals.safeUpdateLeadAndContact.test.json";
+
 function parseFormBody(raw) {
   const params = new URLSearchParams(raw || "");
   const out = {};

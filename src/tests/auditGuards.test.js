@@ -7,6 +7,7 @@ import { getPortal, upsertPortal } from "../core/store.js";
 import { buildDecision } from "../modules/bot/handler/decision.js";
 import { crmSettings } from "../modules/settings.crm.js";
 
+process.env.TOKENS_FILE = "./data/portals.auditGuards.test.json";
 process.env.BITRIX_EVENTS_SECRET = "audit-secret";
 process.env.BITRIX_VALIDATE_APP_TOKEN = "1";
 

@@ -3,10 +3,13 @@ import path from "path";
 
 import { logger } from "./logger.js";
 
-const tokensFile = process.env.TOKENS_FILE || "./data/portals.json";
-const filePath = path.resolve(process.cwd(), tokensFile);
+function getFilePath() {
+  const tokensFile = process.env.TOKENS_FILE || "./data/portals.json";
+  return path.resolve(process.cwd(), tokensFile);
+}
 
 export function loadStore() {
+  const filePath = getFilePath();
   try {
     if (!fs.existsSync(filePath)) return {};
     return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -17,6 +20,7 @@ export function loadStore() {
 }
 
 export function saveStore(obj) {
+  const filePath = getFilePath();
   try {
     const dir = path.dirname(filePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });

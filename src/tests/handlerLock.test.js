@@ -6,6 +6,8 @@ import { upsertPortal } from "../core/store.js";
 import { processIncomingBitrixMessage } from "../modules/bot/handler/index.js";
 import { getSession, saveSession } from "../modules/bot/sessionStore.js";
 
+process.env.TOKENS_FILE = "./data/portals.handlerLock.test.json";
+
 function makeBody({ domain, dialogId, chatId, messageId, message }) {
   return {
     event: "onimbotmessageadd",

@@ -5,7 +5,9 @@ import test from "node:test";
 
 import { getPortal, loadStore, saveStore, upsertPortal } from "../core/store.js";
 
-const STORE_PATH = path.resolve(process.cwd(), "data", "portals.json");
+process.env.TOKENS_FILE = "./data/portals.store.test.json";
+
+const STORE_PATH = path.resolve(process.cwd(), process.env.TOKENS_FILE);
 const STORE_DIR = path.dirname(STORE_PATH);
 
 function backupStoreFile() {
@@ -60,7 +62,8 @@ test("store: saveStore does not leave temporary files", () => {
     });
 
     const files = fs.readdirSync(STORE_DIR);
-    const tmpFiles = files.filter((f) => f.startsWith("portals.json.tmp."));
+    const tmpPrefix = `${path.basename(STORE_PATH)}.tmp.`;
+    const tmpFiles = files.filter((f) => f.startsWith(tmpPrefix));
     assert.deepEqual(tmpFiles, []);
 
     const json = fs.readFileSync(STORE_PATH, "utf8");
@@ -69,4 +72,3 @@ test("store: saveStore does not leave temporary files", () => {
     restoreStoreFile(backup);
   }
 });
-
