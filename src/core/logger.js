@@ -1,3 +1,5 @@
+// @ts-check
+
 // src/core/logger.js
 // Простой человеко-читаемый логгер без кракозябр в консоли.
 // Совместим по API с pino-стилем: logger.info({ ctx }, "message")
@@ -10,11 +12,13 @@ const LOG_DIR = process.env.LOG_DIR || "./logs";
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 
 // Порядок важности уровней
+/** @type {Array<"debug"|"info"|"warn"|"error">} */
 const LEVELS = ["debug", "info", "warn", "error"];
+/** @type {Record<"debug"|"info"|"warn"|"error", number>} */
 const LEVEL_PRIORITY = LEVELS.reduce((acc, level, idx) => {
   acc[level] = idx;
   return acc;
-}, {});
+}, /** @type {Record<"debug"|"info"|"warn"|"error", number>} */ ({}));
 
 // Гарантируем, что папка логов существует
 if (!fs.existsSync(LOG_DIR)) {
@@ -45,7 +49,12 @@ function normalizeArgs(ctxOrMsg, maybeMsg) {
 }
 
 function shouldLog(level) {
-  const current = LEVEL_PRIORITY[LOG_LEVEL] ?? LEVEL_PRIORITY.info;
+  const currentLevel = /** @type {"debug"|"info"|"warn"|"error"} */ (
+    LEVELS.includes(/** @type {any} */ (LOG_LEVEL))
+      ? /** @type {any} */ (LOG_LEVEL)
+      : "info"
+  );
+  const current = LEVEL_PRIORITY[currentLevel] ?? LEVEL_PRIORITY.info;
   const target = LEVEL_PRIORITY[level] ?? LEVEL_PRIORITY.info;
   return target >= current;
 }
@@ -54,6 +63,11 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+/**
+ * @param {"debug"|"info"|"warn"|"error"} level
+ * @param {any} [ctxOrMsg]
+ * @param {string} [maybeMsg]
+ */
 function write(level, ctxOrMsg, maybeMsg) {
   if (!shouldLog(level)) return;
 
