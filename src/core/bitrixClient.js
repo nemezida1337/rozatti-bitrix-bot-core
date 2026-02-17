@@ -1,12 +1,41 @@
+// @ts-check
+
 import { logger } from "./logger.js";
 import { refreshTokens } from "./oauth.js";
 import { getPortal } from "./store.js";
 
+/**
+ * @typedef {Object} BitrixPortal
+ * @property {string} [domain]
+ * @property {string} [baseUrl]
+ * @property {string} [accessToken]
+ * @property {string} [refreshToken]
+ * @property {number} [expiresAt]
+ */
+
+/**
+ * @typedef {Object} BitrixClientOptions
+ * @property {string} domain
+ * @property {string} [baseUrl]
+ * @property {string} [accessToken]
+ */
+
+/**
+ * @typedef {Object} BitrixClient
+ * @property {(method: string, params?: Record<string, any>) => Promise<any>} call
+ */
+
+/** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // рекурсивная сборка form-urlencoded a[b][c]=...
+/** @param {Record<string, any>} params */
 function buildForm(params) {
   const form = new URLSearchParams();
+  /**
+   * @param {string} key
+   * @param {any} val
+   */
   const append = (key, val) => {
     if (val === undefined || val === null) return;
     if (typeof val === "object" && !(val instanceof Date)) {
@@ -29,12 +58,17 @@ function buildForm(params) {
  *  - baseUrl: client_endpoint из Bitrix (может обновиться после refresh)
  *  - accessToken: начальный токен (актуализируется из store при каждом вызове)
  */
+/** @param {BitrixClientOptions} options */
 export function makeBitrixClient({ domain, baseUrl, accessToken }) {
   if (!domain) throw new Error("domain is required for Bitrix client");
 
   // --- DEBUG: один раз логируем, от какого пользователя идут REST-вызовы ---
   let debugUserLogged = false;
 
+  /**
+   * @param {string} method
+   * @param {Record<string, any>} [params]
+   */
   async function call(method, params = {}) {
     // Один раз за жизнь процесса узнаём реального Bitrix-пользователя.
     // Используем метод profile, он не требует никаких scope'ов.
@@ -67,6 +101,7 @@ export function makeBitrixClient({ domain, baseUrl, accessToken }) {
       attempt++;
 
       // всегда берём свежие данные из store (могли обновиться при refresh)
+      /** @type {BitrixPortal} */
       const portal = getPortal(domain) || { baseUrl, accessToken };
       const root = String(portal.baseUrl || baseUrl || "").replace(/\/+$/, "");
       const apiBase = root.endsWith("/rest") ? root : `${root}/rest`;
@@ -112,8 +147,9 @@ export function makeBitrixClient({ domain, baseUrl, accessToken }) {
             token = await refreshTokens(domain);
             continue; // повторить вызов с новым токеном
           } catch (e) {
+            const refreshErr = /** @type {{ message?: string }} */ (e);
             throw Object.assign(
-              new Error("refresh_token failed: " + (e.message || e)),
+              new Error("refresh_token failed: " + (refreshErr.message || String(e))),
               { code, res: json }
             );
           }
@@ -135,5 +171,5 @@ export function makeBitrixClient({ domain, baseUrl, accessToken }) {
     }
   }
 
-  return { call };
+  return /** @type {BitrixClient} */ ({ call });
 }
