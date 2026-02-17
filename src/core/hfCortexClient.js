@@ -1,3 +1,5 @@
+// @ts-check
+
 // src/core/hfCortexClient.js
 // HTTP-клиент для HF-CORTEX (flow lead_sales)
 // В Node 18+ fetch и AbortController доступны глобально, без node-fetch.
@@ -5,6 +7,23 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+/**
+ * @typedef {Object} CortexLogger
+ * @property {(ctxOrMsg?: any, maybeMsg?: string) => void} [debug]
+ * @property {(ctxOrMsg?: any, maybeMsg?: string) => void} [info]
+ * @property {(ctxOrMsg?: any, maybeMsg?: string) => void} [warn]
+ * @property {(ctxOrMsg?: any, maybeMsg?: string) => void} [error]
+ */
+
+/**
+ * @typedef {Object} CortexResponse
+ * @property {boolean} [ok]
+ * @property {string} [flow]
+ * @property {string} [stage]
+ * @property {Record<string, any>} [payload]
+ */
+
+/** @param {any} payload */
 function makeDumpId(payload) {
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
 
@@ -22,6 +41,11 @@ function makeDumpId(payload) {
   return `${ts}__${safeDialog}__${rand}`;
 }
 
+/**
+ * @param {string} dumpId
+ * @param {string} kind
+ * @param {any} obj
+ */
 async function dumpCortexToFile(dumpId, kind, obj) {
   if (process.env.HF_CORTEX_DUMP !== "1") return;
 
@@ -36,6 +60,11 @@ async function dumpCortexToFile(dumpId, kind, obj) {
   );
 }
 
+/**
+ * @param {any} payload
+ * @param {CortexLogger} [logger]
+ * @returns {Promise<CortexResponse|null>}
+ */
 export async function callCortexLeadSales(payload, logger) {
   const {
     HF_CORTEX_ENABLED,
@@ -112,6 +141,7 @@ export async function callCortexLeadSales(payload, logger) {
     }
 
     const rawText = await res.text().catch(() => "");
+    /** @type {CortexResponse|null} */
     let data;
 
     try {
