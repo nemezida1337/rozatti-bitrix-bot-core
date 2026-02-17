@@ -32,6 +32,9 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Node Coverage
+        run: npm run test:coverage
+
   cortex-pytest:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -53,3 +56,6 @@ jobs:
 
       - name: Run Cortex tests
         run: pytest hf_cortex_py/tests -q
+
+      - name: Python Coverage
+        run: pytest hf_cortex_py/tests --cov=core --cov=flows --cov-report=term-missing -q
