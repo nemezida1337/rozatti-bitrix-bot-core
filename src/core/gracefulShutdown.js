@@ -1,5 +1,44 @@
+// @ts-check
+
 const CTX = "core/gracefulShutdown";
 
+/**
+ * @typedef {Object} ShutdownLogger
+ * @property {(ctxOrMsg?: any, maybeMsg?: string) => void} info
+ * @property {(ctxOrMsg?: any, maybeMsg?: string) => void} warn
+ * @property {(ctxOrMsg?: any, maybeMsg?: string) => void} error
+ */
+
+/**
+ * @typedef {Object} ShutdownProcessRef
+ * @property {(event: "SIGTERM" | "SIGINT", listener: () => void) => any} on
+ * @property {(event: "SIGTERM" | "SIGINT", listener: () => void) => any} off
+ * @property {(code?: number) => never | void} exit
+ */
+
+/**
+ * @typedef {Object} WithTimeoutOptions
+ * @property {string} taskName
+ * @property {number} timeoutMs
+ * @property {() => any | Promise<any>} run
+ * @property {(cb: () => void, ms: number) => any} [setTimeoutFn]
+ * @property {(timer: any) => void} [clearTimeoutFn]
+ */
+
+/**
+ * @typedef {Object} GracefulShutdownOptions
+ * @property {{ close?: () => any | Promise<any> }} [app]
+ * @property {ShutdownLogger} [logger]
+ * @property {Array<(reason: string) => any | Promise<any>>} [hooks]
+ * @property {number} [timeoutMs]
+ * @property {ShutdownProcessRef} [processRef]
+ * @property {(cb: () => void, ms: number) => any} [setTimeoutFn]
+ * @property {(timer: any) => void} [clearTimeoutFn]
+ */
+
+/**
+ * @param {WithTimeoutOptions} options
+ */
 function withTimeout({
   taskName,
   timeoutMs,
@@ -36,6 +75,9 @@ function withTimeout({
   });
 }
 
+/**
+ * @param {GracefulShutdownOptions} [options]
+ */
 export function createGracefulShutdown({
   app,
   logger,
