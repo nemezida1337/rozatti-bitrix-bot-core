@@ -14,6 +14,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+__MACOSX/
 
 # === Логи ===
 logs/
@@ -28,6 +29,8 @@ logs/
 data/portals.json
 data/portals.*.test.json
 data/sessions/
+data/events/
+data/cortex/
 data/tmp/
 cache/
 tmp/
@@ -42,3 +45,4 @@ build/
 # === Misc ===
 *.bak
 *.tmp
+сырые чаты/

@@ -2,7 +2,8 @@
 
 [CmdletBinding()]
 param(
-  [int]$Port = 8080
+  [int]$Port = 8080,
+  [string]$EnvFile = ".env"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,4 +40,4 @@ if (-not (Get-Process cloudflared -ErrorAction SilentlyContinue)) {
 
 # 2) Запускаем бота
 Write-Host "[dev] Стартую сервер бота..." -ForegroundColor Cyan
-& .\run-bot.ps1 -Port $Port
+& .\run-bot.ps1 -Port $Port -EnvFile $EnvFile

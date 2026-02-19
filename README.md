@@ -101,6 +101,13 @@ pip install -r requirements.txt
 
 Создайте `.env` в корне проекта по примеру `.env.example`.
 
+Рекомендуемые профили:
+
+- `.env` — локальная разработка
+- `.env.debug` — диагностика (временные дампы/повышенный лог-уровень)
+- `.env.prod` — боевой профиль
+- шаблоны: `.env.debug.example`, `.env.prod.example`
+
 Ключевые переменные:
 
 ```env
@@ -116,6 +123,10 @@ TOKENS_FILE=./data/portals.json
 LOG_LEVEL=info
 LOG_DIR=./logs
 
+# безопасные дефолты для прода
+EVENT_DUMP=0
+HF_CORTEX_DUMP=0
+
 # HF-Cortex bridge (Node -> Python)
 HF_CORTEX_ENABLED=true
 HF_CORTEX_URL=http://127.0.0.1:9000/api/hf-cortex/lead_sales
@@ -128,6 +139,11 @@ ABCP_USERLOGIN=api@abcpXXXX
 ABCP_USERPSW_MD5=<md5>
 ABCP_KEY=api@abcpXXXX
 ```
+
+Минимальные отличия профилей:
+
+- `.env.prod`: `LOG_LEVEL=info`, `EVENT_DUMP=0`, `HF_CORTEX_DUMP=0`
+- `.env.debug`: `LOG_LEVEL=debug`, `EVENT_DUMP=1`, `HF_CORTEX_DUMP=1`, `BITRIX_ALLOW_ONIMMESSAGEADD=1`
 
 ## Конфигурация `hf_cortex_py`
 
@@ -146,6 +162,8 @@ ABCP_KEY=api@abcpXXXX
 npm run dev
 # или
 node src/index.js
+# или с конкретным env-файлом
+node --env-file=.env.prod src/index.js
 ```
 
 Проверка:
@@ -166,8 +184,15 @@ uvicorn app:app --host 127.0.0.1 --port 9000 --reload
 
 - `dev.ps1` — локальный dev-пайплайн (туннель + запуск бота)
 - `start-tunnel-once.ps1` — старт Cloudflare Quick Tunnel
-- `run-bot.ps1` — локальный запуск Node-сервиса
+- `run-bot.ps1` — локальный запуск Node-сервиса (поддерживает `-EnvFile`)
 - `update-base-url.ps1` — обновление `BASE_URL` в `.env`
+
+Примеры:
+
+```powershell
+.\dev.ps1 -Port 8080 -EnvFile ".env.debug"
+.\run-bot.ps1 -Port 8080 -EnvFile ".env.prod"
+```
 
 ## Поток обработки (V2)
 
@@ -224,4 +249,3 @@ pytest -q
 ```bash
 npm run lint
 ```
-
