@@ -73,6 +73,41 @@ test("smallTalk: resolves ADDRESS for pickup/address questions", () => {
   assert.equal(result.reply, salesFaqSettings.topics.ADDRESS);
 });
 
+test("smallTalk: resolves PAYMENT for settlement question", () => {
+  const result = resolveSmallTalk("Здравствуйте, завтра будет проводиться расчет?");
+  assert.ok(result);
+  assert.equal(result.intent, "HOWTO");
+  assert.equal(result.topic, "PAYMENT");
+});
+
+test("smallTalk: resolves PAYMENT for transfer to card question", () => {
+  const result = resolveSmallTalk("Здравствуйте, можно узнать что там с переводом на карту?");
+  assert.ok(result);
+  assert.equal(result.intent, "HOWTO");
+  assert.equal(result.topic, "PAYMENT");
+});
+
+test("smallTalk: resolves DELIVERY for tracking and shipping timing", () => {
+  const result = resolveSmallTalk("Доброе утро! По трек номеру и отправке примерные сроки?");
+  assert.ok(result);
+  assert.equal(result.intent, "HOWTO");
+  assert.equal(result.topic, "DELIVERY");
+});
+
+test("smallTalk: resolves DELIVERY for how long shipping takes", () => {
+  const result = resolveSmallTalk("До Невинномысска сколько будет идти?");
+  assert.ok(result);
+  assert.equal(result.intent, "HOWTO");
+  assert.equal(result.topic, "DELIVERY");
+});
+
+test("smallTalk: keeps noisy operational text as NONE", () => {
+  const result = resolveSmallTalk(
+    "Добрый день, по блоку раздатки заказ 3456, приняли решение? что делаем в итоге?",
+  );
+  assert.equal(result, null);
+});
+
 test("smallTalk: returns null for regular sales text", () => {
   const result = resolveSmallTalk("нужен 06H905110G");
   assert.equal(result, null);
