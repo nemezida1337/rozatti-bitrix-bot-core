@@ -673,6 +673,97 @@ test("safeUpdateLeadAndContact: non-11-digit phone in update_lead_fields is pass
   }
 });
 
+test("safeUpdateLeadAndContact: skips PHONE when it is derived from OEM-like user message", async () => {
+  const fake = await startFakeBitrix();
+  const domain = "audit-safe-skip-phone-from-oem.bitrix24.ru";
+
+  upsertPortal(domain, {
+    domain,
+    baseUrl: fake.baseUrl,
+    accessToken: "token-19",
+    refreshToken: "refresh-19",
+  });
+
+  try {
+    await safeUpdateLeadAndContact({
+      portal: domain,
+      dialogId: "chat2019",
+      chatId: "2019",
+      session: { leadId: 1019, state: { stage: "NEW" } },
+      llm: {
+        stage: "CONTACT",
+        action: "reply",
+        oems: ["A9602820106"],
+        offers: [],
+        chosen_offer_id: null,
+        update_lead_fields: {
+          PHONE: "9602820106",
+        },
+      },
+      lastUserMessage: "A9602820106",
+      usedBackend: "HF_CORTEX",
+    });
+
+    const leadUpdate = fake.calls.find((c) => c.method === "crm.lead.update");
+    assert.ok(leadUpdate, "crm.lead.update must be called");
+    assert.equal(
+      Object.keys(leadUpdate.form).some((k) => k.includes("[PHONE]")),
+      false,
+      "PHONE must be skipped when it matches OEM digits from user message",
+    );
+  } finally {
+    await fake.close();
+  }
+});
+
+test("safeUpdateLeadAndContact: skips DELIVERY_ADDRESS when value is framed service text", async () => {
+  const fake = await startFakeBitrix();
+  const domain = "audit-safe-skip-service-address.bitrix24.ru";
+  const deliveryField = crmSettings.leadFields.DELIVERY_ADDRESS;
+
+  upsertPortal(domain, {
+    domain,
+    baseUrl: fake.baseUrl,
+    accessToken: "token-20",
+    refreshToken: "refresh-20",
+  });
+
+  try {
+    await safeUpdateLeadAndContact({
+      portal: domain,
+      dialogId: "chat2020",
+      chatId: "2020",
+      session: { leadId: 1020, state: { stage: "ADDRESS" } },
+      llm: {
+        stage: "ADDRESS",
+        action: "reply",
+        oems: [],
+        offers: [],
+        chosen_offer_id: null,
+        update_lead_fields: {
+          DELIVERY_ADDRESS:
+            "------------------------------------------------------\n" +
+            "Rozatti[18:17:05]\n" +
+            "Заказ №4045 ожидает забора\n" +
+            "------------------------------------------------------",
+        },
+      },
+      lastUserMessage: "служебное",
+      usedBackend: "HF_CORTEX",
+    });
+
+    const leadUpdate = fake.calls.find((c) => c.method === "crm.lead.update");
+    assert.ok(leadUpdate, "crm.lead.update must be called");
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(leadUpdate.form, `fields[${deliveryField}]`),
+      false,
+      "Service framed text must not be written into DELIVERY_ADDRESS",
+    );
+  } finally {
+    await fake.close();
+  }
+});
+
 test("safeUpdateLeadAndContact: continues when HF_CORTEX_LOG is invalid JSON", async () => {
   const fake = await startFakeBitrix({
     resolvePayload: ({ method }) => {

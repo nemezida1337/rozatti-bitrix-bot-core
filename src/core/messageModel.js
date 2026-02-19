@@ -4,6 +4,10 @@
 import { logger } from "./logger.js";
 
 const CTX = "messageModel";
+const SERVICE_FRAME_LINE_RE = /-{20,}/;
+const SERVICE_HEADER_RE = /^[^\n]{1,120}\[[^\]]{3,40}\]/m;
+const SERVICE_LEXEMES_RE =
+  /(заказ\s*№|отслеживат|команда\s+[a-zа-я0-9_.-]+|интернет-?магазин|свяжутся)/i;
 
 /**
  * normalizeIncomingMessage(body)
@@ -41,6 +45,8 @@ export function normalizeIncomingMessage(body) {
     const fromUserId = extractFromUserId(body);
     const messageId = extractMessageId(body);
     const text = extractText(body);
+    const isForwarded = isForwardedMessage(params);
+    const isSystemLike = detectSystemLikeMessage({ params, text });
 
     return {
       portal,
@@ -50,7 +56,8 @@ export function normalizeIncomingMessage(body) {
       messageId,
       text: text || "",
       attachments: params?.FILES || [],
-      isForwarded: Boolean(params?.FORWARD || false),
+      isForwarded,
+      isSystemLike,
       raw: body,
     };
   } catch (err) {
@@ -132,6 +139,31 @@ function extractText(body) {
   } catch {
     return "";
   }
+}
+
+function isTruthyFlag(v) {
+  if (v === true || v === 1) return true;
+  const s = String(v || "").trim().toUpperCase();
+  return s === "Y" || s === "YES" || s === "TRUE" || s === "1";
+}
+
+function isForwardedMessage(params) {
+  if (!params || typeof params !== "object") return false;
+  return isTruthyFlag(params.FORWARD);
+}
+
+function detectSystemLikeMessage({ params, text }) {
+  if (isTruthyFlag(params?.SYSTEM)) return true;
+
+  const t = String(text || "").trim();
+  if (!t) return false;
+
+  const frameCount = (t.match(new RegExp(SERVICE_FRAME_LINE_RE.source, "g")) || []).length;
+  const hasFramedEnvelope = frameCount >= 2;
+  const hasHeader = SERVICE_HEADER_RE.test(t);
+  const hasServiceLexemes = SERVICE_LEXEMES_RE.test(t);
+
+  return hasFramedEnvelope && (hasHeader || hasServiceLexemes);
 }
 
 function extractFromUserId(body) {

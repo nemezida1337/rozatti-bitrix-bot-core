@@ -105,6 +105,24 @@ test("normalizeIncomingMessage: supports MESSAGE/FORWARD/FILES and MESSAGE_ID", 
   assert.equal(msg.messageId, "100500");
   assert.deepEqual(msg.attachments, [{ id: 1 }]);
   assert.equal(msg.isForwarded, true);
+  assert.equal(msg.isSystemLike, false);
+});
+
+test("normalizeIncomingMessage: marks framed service notifications as system-like", () => {
+  const msg = normalizeIncomingMessage({
+    data: {
+      PARAMS: {
+        DIALOG_ID: "chat7100",
+        MESSAGE:
+          "------------------------------------------------------\n" +
+          "Rozatti[18:17:05]\n" +
+          "Заказ №4045 ожидает забора транспортной компанией.\n" +
+          "------------------------------------------------------",
+      },
+    },
+  });
+
+  assert.equal(msg.isSystemLike, true);
 });
 
 test("normalizeIncomingMessage: returns null on unexpected accessor error", () => {

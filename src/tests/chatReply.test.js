@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import test from "node:test";
 
+import { eventBus } from "../core/eventBus.js";
 import { shouldSendChatReply, sendChatReplyIfAllowed } from "../modules/bot/handler/shared/chatReply.js";
 
 function startFakeBitrix(statusId) {
@@ -163,3 +164,85 @@ test("chatReply.sendChatReplyIfAllowed: does not send message for manual status"
   }
 });
 
+test("chatReply.sendChatReplyIfAllowed: falls back to openlines send when imbot returns CANCELED", async () => {
+  const fake = await startFakeBitrix("PROCESSED");
+  const calls = [];
+  const api = {
+    async call(method, params) {
+      calls.push({ method, params });
+      if (method === "imbot.message.add") {
+        const err = new Error("denied");
+        err.code = "CANCELED";
+        err.res = { error: "CANCELED" };
+        throw err;
+      }
+      return { result: true };
+    },
+  };
+
+  try {
+    const sent = await sendChatReplyIfAllowed({
+      api,
+      portalDomain: "audit-chat-fallback-ok.bitrix24.ru",
+      portalCfg: { baseUrl: fake.baseUrl, accessToken: "token" },
+      dialogId: "chat9003",
+      leadId: 1001,
+      message: "fallback hello",
+    });
+
+    assert.equal(sent, true);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].method, "imbot.message.add");
+    assert.equal(calls[1].method, "imopenlines.bot.session.message.send");
+    assert.deepEqual(calls[1].params, {
+      CHAT_ID: 9003,
+      MESSAGE: "fallback hello",
+    });
+  } finally {
+    await fake.close();
+  }
+});
+
+test("chatReply.sendChatReplyIfAllowed: returns false when fallback also fails", async () => {
+  const fake = await startFakeBitrix("PROCESSED");
+  const calls = [];
+  const failures = [];
+  const onFailed = (p) => failures.push(p);
+  eventBus.on("BOT_REPLY_FAILED", onFailed);
+  const api = {
+    async call(method, params) {
+      calls.push({ method, params });
+      const err = new Error("send failed");
+      if (method === "imbot.message.add") {
+        err.code = "CANCELED";
+        err.res = { error: "CANCELED" };
+      }
+      throw err;
+    },
+  };
+
+  try {
+    const sent = await sendChatReplyIfAllowed({
+      api,
+      portalDomain: "audit-chat-fallback-fail.bitrix24.ru",
+      portalCfg: { baseUrl: fake.baseUrl, accessToken: "token" },
+      dialogId: "chat9004",
+      leadId: 1001,
+      message: "x",
+    });
+
+    assert.equal(sent, false);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].method, "imbot.message.add");
+    assert.equal(calls[1].method, "imopenlines.bot.session.message.send");
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].portal, "audit-chat-fallback-fail.bitrix24.ru");
+    assert.equal(failures[0].dialogId, "chat9004");
+    assert.equal(failures[0].leadId, 1001);
+    assert.equal(failures[0].errorCode, "UNKNOWN");
+    assert.equal(failures[0].channel, "openlines_fallback");
+  } finally {
+    eventBus.off("BOT_REPLY_FAILED", onFailed);
+    await fake.close();
+  }
+});

@@ -1,10 +1,29 @@
 // src/modules/bot/handler/shared/chatReply.js
 
 import { logger } from "../../../../core/logger.js";
+import { eventBus } from "../../../../core/eventBus.js";
 import { getLeadStatusId } from "../../../crm/leadStateService.js";
 import { crmSettings } from "../../../settings.crm.js";
 
 const CTX = "modules/bot/handler/shared/chatReply";
+
+function buildOpenlinesPayload(dialogId, message) {
+  const raw = String(dialogId || "");
+  const payload = { MESSAGE: message };
+
+  if (/^chat\d+$/i.test(raw)) {
+    payload.CHAT_ID = Number(raw.replace(/\D/g, ""));
+    return payload;
+  }
+
+  if (/^\d+$/.test(raw)) {
+    payload.CHAT_ID = Number(raw);
+    return payload;
+  }
+
+  payload.DIALOG_ID = raw;
+  return payload;
+}
 
 /**
  * Решаем, можно ли писать в чат, или включается silent enrichment.
@@ -78,10 +97,55 @@ export async function sendChatReplyIfAllowed({
     return false;
   }
 
-  await api.call("imbot.message.add", {
-    DIALOG_ID: dialogId,
-    MESSAGE: message || "…",
-  });
+  const replyText = message || "…";
 
-  return true;
+  try {
+    await api.call("imbot.message.add", {
+      DIALOG_ID: dialogId,
+      MESSAGE: replyText,
+    });
+    return true;
+  } catch (err) {
+    const code = err?.code || err?.res?.error || null;
+
+    // Частый кейс в Open Lines: imbot.message.add может вернуть CANCELED.
+    // Пробуем нативный OL-метод и не роняем webhook.
+    if (code === "CANCELED") {
+      logger.warn(
+        { ctx: `${CTX}.FALLBACK`, portalDomain, dialogId, leadId, code },
+        "imbot.message.add denied, trying imopenlines.bot.session.message.send",
+      );
+      try {
+        await api.call(
+          "imopenlines.bot.session.message.send",
+          buildOpenlinesPayload(dialogId, replyText),
+        );
+        return true;
+      } catch (fallbackErr) {
+        const errorCode = fallbackErr?.code || fallbackErr?.res?.error || "UNKNOWN";
+        logger.error(
+          {
+            ctx: `${CTX}.FALLBACK`,
+            portalDomain,
+            dialogId,
+            leadId,
+            errorCode,
+            error: fallbackErr?.message || String(fallbackErr),
+          },
+          "Open Lines fallback send failed",
+        );
+        await eventBus.emit("BOT_REPLY_FAILED", {
+          portal: portalDomain,
+          dialogId,
+          leadId,
+          errorCode,
+          channel: "openlines_fallback",
+          messagePreview: String(replyText || "").slice(0, 120),
+        });
+        return false;
+      }
+    }
+
+    throw err;
+  }
 }

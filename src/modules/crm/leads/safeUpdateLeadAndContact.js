@@ -3,6 +3,7 @@
 import { crmSettings } from "../../../config/settings.crm.js";
 import { logger } from "../../../core/logger.js";
 import { getPortal } from "../../../core/store.js";
+import { detectOemsFromText } from "../../bot/oemDetector.js";
 import { ensureContact } from "../contact/contactService.js";
 import { getLead } from "../leadStateService.js";
 
@@ -13,6 +14,10 @@ import {
 } from "./updateLeadService.js";
 
 const CTX = "modules/crm/leads/safeUpdateLeadAndContact";
+const SERVICE_FRAME_LINE_RE = /-{20,}/;
+const SERVICE_HEADER_RE = /^[^\n]{1,120}\[[^\]]{3,40}\]/m;
+const SERVICE_LEXEMES_RE =
+  /(заказ\s*№|отслеживат|команда\s+[a-zа-я0-9_.-]+|интернет-?магазин|свяжутся)/i;
 
 /**
  * Нормализация телефона в формат 7XXXXXXXXXX
@@ -102,6 +107,44 @@ function deriveContactUpdate(update_lead_fields, session) {
     second_name: fields.SECOND_NAME || null,
     phone,
   };
+}
+
+function isLikelySystemLikeText(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+
+  const frameCount = (t.match(new RegExp(SERVICE_FRAME_LINE_RE.source, "g")) || []).length;
+  const hasFramedEnvelope = frameCount >= 2;
+  const hasHeader = SERVICE_HEADER_RE.test(t);
+  const hasServiceLexemes = SERVICE_LEXEMES_RE.test(t);
+
+  return hasFramedEnvelope && (hasHeader || hasServiceLexemes);
+}
+
+function canonicalPhoneDigits(raw) {
+  const digits = String(raw || "").replace(/\D/g, "");
+  if (!digits) return null;
+  if (digits.length === 11 && (digits.startsWith("7") || digits.startsWith("8"))) {
+    return digits.slice(1);
+  }
+  if (digits.length === 10) return digits;
+  return digits;
+}
+
+function phoneLooksDerivedFromOem({ phoneRaw, lastUserMessage }) {
+  const msg = String(lastUserMessage || "").trim();
+  if (!msg || !phoneRaw) return false;
+
+  const phoneDigits = canonicalPhoneDigits(phoneRaw);
+  if (!phoneDigits) return false;
+
+  const oems = detectOemsFromText(msg);
+  if (!Array.isArray(oems) || oems.length === 0) return false;
+
+  return oems.some((oem) => {
+    const oemDigits = canonicalPhoneDigits(oem);
+    return !!oemDigits && oemDigits === phoneDigits;
+  });
 }
 
 /**
@@ -312,6 +355,21 @@ export async function safeUpdateLeadAndContact(params) {
       delete cloned.DELIVERY_ADDRESS;
 
       if (typeof cloned.PHONE === "string") {
+        if (
+          phoneLooksDerivedFromOem({
+            phoneRaw: cloned.PHONE,
+            lastUserMessage: effectiveLastUserMessage,
+          })
+        ) {
+          logger.warn(
+            { ctx, leadId, phone: cloned.PHONE, lastUserMessage: effectiveLastUserMessage },
+            "Пропускаем PHONE: похоже на OEM из последнего сообщения",
+          );
+          delete cloned.PHONE;
+        }
+      }
+
+      if (typeof cloned.PHONE === "string") {
         const norm = normalizePhone(cloned.PHONE);
         if (norm) {
           cloned.PHONE = [{ VALUE: norm, VALUE_TYPE: "WORK" }];
@@ -326,9 +384,15 @@ export async function safeUpdateLeadAndContact(params) {
       if (
         deliveryAddressRaw &&
         crmSettings.leadFields?.DELIVERY_ADDRESS &&
-        isStageForDeliveryWrite(stage)
+        isStageForDeliveryWrite(stage) &&
+        !isLikelySystemLikeText(deliveryAddressRaw)
       ) {
         leadFieldsToUpdate[crmSettings.leadFields.DELIVERY_ADDRESS] = deliveryAddressRaw;
+      } else if (deliveryAddressRaw && isLikelySystemLikeText(deliveryAddressRaw)) {
+        logger.warn(
+          { ctx, leadId, deliveryAddressRaw },
+          "Пропускаем DELIVERY_ADDRESS: похоже на служебный/пересланный текст",
+        );
       }
     }
 
