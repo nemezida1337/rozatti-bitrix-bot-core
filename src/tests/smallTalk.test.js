@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveSmallTalk } from "../modules/bot/handler/shared/smallTalk.js";
+import {
+  normalizeSmallTalkText,
+  resolveSmallTalk,
+  shouldSkipSmallTalkReply,
+} from "../modules/bot/handler/shared/smallTalk.js";
 import { salesFaqSettings } from "../modules/settings.salesFaq.js";
 
 test("smallTalk: resolves OFFTOPIC and redirects to VIN/OEM flow", () => {
@@ -43,6 +47,16 @@ test("smallTalk: resolves CONTACTS for call/contact questions", () => {
   assert.equal(result.reply, salesFaqSettings.topics.CONTACTS);
 });
 
+test("smallTalk: does not route generic part numbers into CONTACTS", () => {
+  const result = resolveSmallTalk(
+    "Здравствуйте, хотел бы заказать две детали. Скажите, сколько будут стоить?",
+  );
+  assert.ok(result);
+  assert.equal(result.intent, "HOWTO");
+  assert.equal(result.topic, "PAYMENT");
+  assert.equal(result.reply, salesFaqSettings.topics.PAYMENT);
+});
+
 test("smallTalk: resolves MEDIA for photo/video requests", () => {
   const result = resolveSmallTalk("Можете прислать фото запчасти?");
   assert.ok(result);
@@ -62,4 +76,51 @@ test("smallTalk: resolves ADDRESS for pickup/address questions", () => {
 test("smallTalk: returns null for regular sales text", () => {
   const result = resolveSmallTalk("нужен 06H905110G");
   assert.equal(result, null);
+});
+
+test("smallTalk: normalizeSmallTalkText removes punctuation and collapses spaces", () => {
+  const value = normalizeSmallTalkText("  Подскажите,   как  созвониться?!  ");
+  assert.equal(value, "подскажите как созвониться");
+});
+
+test("smallTalk: shouldSkipSmallTalkReply suppresses duplicate in time window", () => {
+  const now = Date.now();
+  const session = {
+    lastSmallTalkIntent: "HOWTO",
+    lastSmallTalkTopic: "CONTACTS",
+    lastSmallTalkAt: now - 30_000,
+    lastSmallTalkTextNormalized: "подскажите как созвониться",
+  };
+
+  const skip = shouldSkipSmallTalkReply({
+    session,
+    rawText: "Подскажите, как созвониться?",
+    intent: "HOWTO",
+    topic: "CONTACTS",
+    now,
+    dedupMs: 180_000,
+  });
+
+  assert.equal(skip, true);
+});
+
+test("smallTalk: shouldSkipSmallTalkReply allows response outside window", () => {
+  const now = Date.now();
+  const session = {
+    lastSmallTalkIntent: "HOWTO",
+    lastSmallTalkTopic: "CONTACTS",
+    lastSmallTalkAt: now - 181_000,
+    lastSmallTalkTextNormalized: "подскажите как созвониться",
+  };
+
+  const skip = shouldSkipSmallTalkReply({
+    session,
+    rawText: "Подскажите, как созвониться?",
+    intent: "HOWTO",
+    topic: "CONTACTS",
+    now,
+    dedupMs: 180_000,
+  });
+
+  assert.equal(skip, false);
 });

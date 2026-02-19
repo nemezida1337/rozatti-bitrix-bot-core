@@ -18,7 +18,11 @@ import { runCortexTwoPassFlow } from "./flows/cortexTwoPassFlow.js";
 import { runFastOemFlow } from "./flows/fastOemFlow.js";
 import { runManagerOemTriggerFlow } from "./flows/managerOemTriggerFlow.js";
 import { sendChatReplyIfAllowed } from "./shared/chatReply.js";
-import { resolveSmallTalk } from "./shared/smallTalk.js";
+import {
+  normalizeSmallTalkText,
+  resolveSmallTalk,
+  shouldSkipSmallTalkReply,
+} from "./shared/smallTalk.js";
 
 
 // -----------------------------
@@ -194,21 +198,34 @@ export async function processIncomingBitrixMessage({ body, portal, domain }) {
         : null;
 
     if (smallTalk) {
-      await sendChatReplyIfAllowed({
-        api,
-        portalDomain: ctx.domain,
-        portalCfg: ctx.portal,
-        dialogId: ctx.message.dialogId,
-        leadId: session.leadId,
-        message: smallTalk.reply,
+      const isDuplicate = shouldSkipSmallTalkReply({
+        session,
+        rawText: ctx.message.text,
+        intent: smallTalk.intent,
+        topic: smallTalk.topic || null,
       });
+
+      if (!isDuplicate) {
+        await sendChatReplyIfAllowed({
+          api,
+          portalDomain: ctx.domain,
+          portalCfg: ctx.portal,
+          dialogId: ctx.message.dialogId,
+          leadId: session.leadId,
+          message: smallTalk.reply,
+        });
+      }
 
       session.lastSmallTalkIntent = smallTalk.intent;
       session.lastSmallTalkTopic = smallTalk.topic || null;
       session.lastSmallTalkAt = Date.now();
+      session.lastSmallTalkTextNormalized = normalizeSmallTalkText(ctx.message.text || "");
       saveSession(ctx.domain, ctx.message.dialogId, session);
 
-      logger.info({ dialogId, smallTalkIntent: smallTalk.intent }, "[V2] handled by small talk");
+      logger.info(
+        { dialogId, smallTalkIntent: smallTalk.intent, smallTalkDedup: isDuplicate },
+        "[V2] handled by small talk",
+      );
       return;
     }
 

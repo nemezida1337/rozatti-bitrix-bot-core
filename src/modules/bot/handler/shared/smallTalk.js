@@ -12,7 +12,11 @@ const HOWTO_TOPIC_HINT_REGEX =
   /(заказ|оформ|оплат|достав|получ|подобр|возврат|гарант|статус|срок|цен|связ|созвон|телефон|адрес|самовывоз|реквизит|фото|видео|накладн|отправ|трек)/i;
 
 const TOPIC_PATTERNS = [
-  { topic: "CONTACTS", regex: /(созвон|связат|телефон|номер|whatsapp|ватсап|вацап|wats?app|telegram|тг|tg|менеджер)/i },
+  {
+    topic: "CONTACTS",
+    regex:
+      /(созвон|связат|позвон|телефон|номер\s+телеф|ваш\s+номер|контакт|whatsapp|ватсап|вацап|wats?app|telegram|тг|tg|менеджер)/i,
+  },
   { topic: "ADDRESS", regex: /(адрес|где вы|где находит|склад|щукино|ул\.?\s*рогова)/i },
   { topic: "HOURS", regex: /(время работы|график|до скольки|когда работает|выходн)/i },
   { topic: "MEDIA", regex: /(фото|видео|сним)/i },
@@ -28,6 +32,40 @@ function detectHowToTopic(text) {
     if (item.regex.test(text)) return item.topic;
   }
   return null;
+}
+
+export function normalizeSmallTalkText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function shouldSkipSmallTalkReply({
+  session,
+  rawText,
+  intent,
+  topic,
+  now = Date.now(),
+  dedupMs = Number(process.env.SMALL_TALK_DEDUP_MS || 180000),
+}) {
+  if (!session || !rawText || !intent || !Number.isFinite(dedupMs) || dedupMs <= 0) {
+    return false;
+  }
+
+  const normalized = normalizeSmallTalkText(rawText);
+  if (!normalized) return false;
+
+  const lastAt = Number(session.lastSmallTalkAt || 0);
+  const withinWindow = lastAt > 0 && now - lastAt <= dedupMs;
+  if (!withinWindow) return false;
+
+  return (
+    session.lastSmallTalkIntent === intent &&
+    String(session.lastSmallTalkTopic || "") === String(topic || "") &&
+    session.lastSmallTalkTextNormalized === normalized
+  );
 }
 
 /**
