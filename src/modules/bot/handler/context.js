@@ -128,6 +128,7 @@ export async function buildContext({ portal, body, domain: domainHint = null }) 
     isSimpleOem,
     hasImage: !!(msg?.attachments && msg.attachments.length),
     manualStatuses: crmSettings?.manualStatuses || [],
+    botDisabledStatuses: crmSettings?.botDisabledStatuses || [],
     pricingStatusId: crmSettings?.stageToStatusId?.PRICING || null,
     leadFields: crmSettings?.leadFields || {},
   };

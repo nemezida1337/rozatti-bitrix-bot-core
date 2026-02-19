@@ -28,7 +28,7 @@ test("session shared: applyLlmToSession maps llm fields into session", () => {
 
   applyLlmToSession(session, llm);
 
-  assert.equal(session.state.stage, "ADDRESS");
+  assert.equal(session.state.stage, "CONTACT");
   assert.equal(session.state.client_name, "Ivan");
   assert.equal(session.state.delivery_address, "SPB, Nevsky 10");
   assert.equal(session.state.DELIVERY_ADDRESS, "SPB, Nevsky 10");
@@ -65,6 +65,23 @@ test("session shared: applyLlmToSession keeps existing oems/offers when llm arra
   assert.equal(session.state.delivery_address, undefined);
 });
 
+test("session shared: applyLlmToSession ignores noisy DELIVERY_ADDRESS even on FINAL", () => {
+  const session = { state: {} };
+  const llm = {
+    stage: "FINAL",
+    update_lead_fields: {
+      DELIVERY_ADDRESS: "Нужна запчасть 61217726563, сможете привезти?",
+    },
+    reply: "ok",
+  };
+
+  applyLlmToSession(session, llm);
+
+  assert.equal(session.state.delivery_address, undefined);
+  assert.equal(session.state.DELIVERY_ADDRESS, undefined);
+  assert.equal(session.state.last_reply, "ok");
+});
+
 test("session shared: normalizeOemCandidates trims/deduplicates and drops empty", () => {
   const out = normalizeOemCandidates([
     " AAA111 ",
@@ -79,4 +96,3 @@ test("session shared: normalizeOemCandidates trims/deduplicates and drops empty"
   assert.deepEqual(out, ["AAA111", "BBB222", "12345"]);
   assert.deepEqual(normalizeOemCandidates(null), []);
 });
-

@@ -73,6 +73,14 @@ test("smallTalk: resolves ADDRESS for pickup/address questions", () => {
   assert.equal(result.reply, salesFaqSettings.topics.ADDRESS);
 });
 
+test("smallTalk: resolves HOURS for working-hours questions", () => {
+  const result = resolveSmallTalk("Подскажите, какой у вас график работы?");
+  assert.ok(result);
+  assert.equal(result.intent, "HOWTO");
+  assert.equal(result.topic, "HOURS");
+  assert.equal(result.reply, salesFaqSettings.topics.HOURS);
+});
+
 test("smallTalk: resolves PAYMENT for settlement question", () => {
   const result = resolveSmallTalk("Здравствуйте, завтра будет проводиться расчет?");
   assert.ok(result);

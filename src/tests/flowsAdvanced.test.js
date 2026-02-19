@@ -16,6 +16,7 @@ const originalEnv = {
 };
 
 let stubAbcpGet = async () => ({ data: [] });
+let stubAbcpPost = async () => ({ data: { status: 1 } });
 
 function restoreEnv() {
   for (const [k, v] of Object.entries(originalEnv)) {
@@ -60,6 +61,7 @@ process.env.ABCP_USERPSW_MD5 = "pass";
 
 axios.create = () => ({
   get: (url, cfg) => stubAbcpGet(url, cfg),
+  post: (url, body, cfg) => stubAbcpPost(url, body, cfg),
 });
 
 const { runFastOemFlow } = await import("../modules/bot/handler/flows/fastOemFlow.js");
@@ -182,7 +184,12 @@ test("flows: cortexTwoPassFlow handles first-pass Cortex=null", async () => {
   const { api, calls } = makeApiSpy();
   const session = {
     leadId: null,
-    state: { stage: "NEW", offers: [] },
+    phone: "+79991234567",
+    state: {
+      stage: "NEW",
+      offers: [],
+      delivery_address: "г. Москва, ул. Тверская, д. 1",
+    },
   };
 
   const handled = await runCortexTwoPassFlow({
@@ -218,7 +225,12 @@ test("flows: cortexTwoPassFlow runs single-pass when action is not abcp_lookup",
   const { api, calls } = makeApiSpy();
   const session = {
     leadId: null,
-    state: { stage: "NEW", offers: [] },
+    phone: "+79991234567",
+    state: {
+      stage: "NEW",
+      offers: [],
+      delivery_address: "г. Москва, ул. Тверская, д. 1",
+    },
   };
 
   const handled = await runCortexTwoPassFlow({
@@ -276,7 +288,12 @@ test("flows: cortexTwoPassFlow second pass no-progress skips duplicate chat repl
   const { api, calls } = makeApiSpy();
   const session = {
     leadId: null,
-    state: { stage: "NEW", offers: [] },
+    phone: "+79991234567",
+    state: {
+      stage: "NEW",
+      offers: [],
+      delivery_address: "г. Москва, ул. Тверская, д. 1",
+    },
   };
 
   const handled = await runCortexTwoPassFlow({
@@ -332,7 +349,12 @@ test("flows: cortexTwoPassFlow second pass success sends second reply", async ()
   const { api, calls } = makeApiSpy();
   const session = {
     leadId: null,
-    state: { stage: "NEW", offers: [] },
+    phone: "+79991234567",
+    state: {
+      stage: "NEW",
+      offers: [],
+      delivery_address: "г. Москва, ул. Тверская, д. 1",
+    },
   };
 
   const handled = await runCortexTwoPassFlow({
@@ -352,3 +374,222 @@ test("flows: cortexTwoPassFlow second pass success sends second reply", async ()
   assert.match(String(calls[1].params?.MESSAGE || ""), /Нашел 2 предложения/);
 });
 
+test("flows: cortexTwoPassFlow second pass ABCP_CREATE appends order number to client reply", async () => {
+  process.env.HF_CORTEX_ENABLED = "true";
+  process.env.HF_CORTEX_URL = "http://cortex.test/flow";
+  process.env.HF_CORTEX_TIMEOUT_MS = "1000";
+
+  stubAbcpGet = async (url, { params }) => {
+    if (url === "/search/brands") return { data: [{ brand: "BMW" }] };
+    if (url === "/search/articles") {
+      return {
+        data: [{ isOriginal: true, number: params.number, price: 444, deadline: "7 дней" }],
+      };
+    }
+    if (url === "/basket/shipmentMethods") return { data: [{ id: 21 }] };
+    if (url === "/basket/shipmentAddresses") return { data: [{ id: 31 }] };
+    return { data: [] };
+  };
+  stubAbcpPost = async (url) => {
+    if (url === "/basket/order") {
+      return { data: { status: 1, orders: [{ number: "A-2002" }] } };
+    }
+    return { data: { status: 1 } };
+  };
+
+  const getFetchCalls = mockFetchWithJsonBodies([
+    {
+      result: {
+        action: "abcp_lookup",
+        stage: "PRICING",
+        reply: "Собираю цены",
+        oems: ["BBB111"],
+      },
+    },
+    {
+      result: {
+        action: "reply",
+        stage: "ABCP_CREATE",
+        reply: "Оформляю заказ",
+        chosen_offer_id: 7,
+        offers: [{ id: 7, code: "CODE-7", price: 444 }],
+      },
+    },
+  ]);
+
+  const { api, calls } = makeApiSpy();
+  const session = {
+    leadId: null,
+    phone: "+79991234567",
+    state: {
+      stage: "NEW",
+      offers: [],
+      delivery_address: "г. Москва, ул. Тверская, д. 1",
+    },
+  };
+
+  const handled = await runCortexTwoPassFlow({
+    api,
+    portalDomain: "audit-two-pass-abcp-create.bitrix24.ru",
+    portalCfg: { baseUrl: "http://127.0.0.1:9/rest", accessToken: "token" },
+    dialogId: "chat-two-005",
+    chatId: "5",
+    text: "BBB111",
+    session,
+  });
+
+  assert.equal(handled, true);
+  assert.equal(getFetchCalls(), 2);
+  assert.equal(calls.length, 2);
+  assert.match(String(calls[0].params?.MESSAGE || ""), /Собираю цены/);
+  assert.match(String(calls[1].params?.MESSAGE || ""), /Оформляю заказ/);
+  assert.match(String(calls[1].params?.MESSAGE || ""), /A-2002/);
+});
+
+test("flows: cortexTwoPassFlow creates order on FINAL stage", async () => {
+  process.env.HF_CORTEX_ENABLED = "true";
+  process.env.HF_CORTEX_URL = "http://cortex.test/flow";
+  process.env.HF_CORTEX_TIMEOUT_MS = "1000";
+
+  stubAbcpGet = async (url) => {
+    if (url === "/basket/shipmentMethods") return { data: [{ id: 21 }] };
+    if (url === "/basket/shipmentAddresses") return { data: [{ id: 31 }] };
+    return { data: [] };
+  };
+  stubAbcpPost = async (url) => {
+    if (url === "/basket/order") {
+      return { data: { status: 1, orders: [{ number: "A-3003" }] } };
+    }
+    return { data: { status: 1 } };
+  };
+
+  const getFetchCalls = mockFetchWithJsonBodies([
+    {
+      result: {
+        action: "reply",
+        stage: "FINAL",
+        reply: "Оформляю заказ",
+        chosen_offer_id: 5,
+        offers: [{ id: 5, code: "CODE-5", price: 777 }],
+      },
+    },
+  ]);
+
+  const { api, calls } = makeApiSpy();
+  const session = {
+    leadId: null,
+    phone: "+79991234567",
+    state: {
+      stage: "CONTACT",
+      offers: [],
+      delivery_address: "г. Москва, ул. Тверская, д. 1",
+    },
+  };
+
+  const handled = await runCortexTwoPassFlow({
+    api,
+    portalDomain: "audit-two-pass-final-create.bitrix24.ru",
+    portalCfg: { baseUrl: "http://127.0.0.1:9/rest", accessToken: "token" },
+    dialogId: "chat-two-005b",
+    chatId: "5",
+    text: "подтверждаю заказ",
+    session,
+  });
+
+  assert.equal(handled, true);
+  assert.equal(getFetchCalls(), 1);
+  assert.equal(calls.length, 1);
+  assert.match(String(calls[0].params?.MESSAGE || ""), /Оформляю заказ/);
+  assert.match(String(calls[0].params?.MESSAGE || ""), /A-3003/);
+});
+
+test("flows: cortexTwoPassFlow converts lead to deal after successful ABCP order", async () => {
+  process.env.HF_CORTEX_ENABLED = "true";
+  process.env.HF_CORTEX_URL = "http://cortex.test/flow";
+  process.env.HF_CORTEX_TIMEOUT_MS = "1000";
+
+  stubAbcpGet = async (url, { params }) => {
+    if (url === "/search/brands") return { data: [{ brand: "BMW" }] };
+    if (url === "/search/articles") {
+      return {
+        data: [{ isOriginal: true, number: params.number, price: 555, deadline: "3 дня" }],
+      };
+    }
+    if (url === "/basket/shipmentMethods") return { data: [{ id: 21 }] };
+    if (url === "/basket/shipmentAddresses") return { data: [{ id: 31 }] };
+    return { data: [] };
+  };
+  stubAbcpPost = async (url) => {
+    if (url === "/basket/order") {
+      return { data: { status: 1, orders: [{ number: "A-7777" }] } };
+    }
+    return { data: { status: 1 } };
+  };
+
+  const getFetchCalls = mockFetchWithJsonBodies([
+    {
+      result: {
+        action: "abcp_lookup",
+        stage: "PRICING",
+        reply: "Ищу варианты",
+        oems: ["CCC111"],
+      },
+    },
+    {
+      result: {
+        action: "reply",
+        stage: "ABCP_CREATE",
+        reply: "Оформляю заказ",
+        chosen_offer_id: 9,
+        offers: [{ id: 9, code: "CODE-9", price: 555 }],
+      },
+    },
+  ]);
+
+  const calls = [];
+  const api = {
+    async call(method, params) {
+      calls.push({ method, params });
+      if (method === "crm.lead.get") {
+        return {
+          ID: 321,
+          TITLE: "Тестовый лид",
+          STATUS_ID: "UC_T710VD",
+          ASSIGNED_BY_ID: 12,
+          SOURCE_ID: "OPENLINES",
+        };
+      }
+      if (method === "crm.lead.convert") {
+        return { result: { DEAL_ID: 55501 } };
+      }
+      return { result: true };
+    },
+  };
+
+  const session = {
+    leadId: 321,
+    phone: "+79991234567",
+    state: {
+      stage: "NEW",
+      offers: [],
+      delivery_address: "г. Москва, ул. Тверская, д. 1",
+    },
+  };
+
+  const handled = await runCortexTwoPassFlow({
+    api,
+    portalDomain: "audit-two-pass-convert.bitrix24.ru",
+    portalCfg: { baseUrl: "http://127.0.0.1:9/rest", accessToken: "token" },
+    dialogId: "chat-two-006",
+    chatId: "6",
+    text: "CCC111",
+    session,
+  });
+
+  assert.equal(handled, true);
+  assert.ok(getFetchCalls() >= 2);
+  assert.ok(calls.some((x) => x.method === "crm.lead.get"));
+  assert.ok(calls.some((x) => x.method === "crm.lead.convert"));
+  assert.equal(session.lastLeadConversion?.ok, true);
+  assert.equal(session.lastLeadConversion?.dealId, 55501);
+});

@@ -136,6 +136,21 @@ export async function processIncomingBitrixMessage({ body, portal, domain }) {
     if (msgId) session.lastProcessedMessageId = msgId;
     session.lastProcessedAt = Date.now();
 
+    // Полное отключение бота для отдельных статусов (например, "Постоянный клиент")
+    const botDisabledByStatus =
+      !!ctx?.lead?.statusId &&
+      Array.isArray(ctx?.botDisabledStatuses) &&
+      ctx.botDisabledStatuses.includes(ctx.lead.statusId);
+
+    if (botDisabledByStatus) {
+      saveSession(ctx.domain, ctx.message.dialogId, session);
+      logger.info(
+        { dialogId, statusId: ctx?.lead?.statusId },
+        "[V2] bot disabled by lead status",
+      );
+      return;
+    }
+
     // --- MANUAL trigger (manager filled OEM in lead) ---
     const manualByStatus =
       !!ctx?.lead?.statusId &&

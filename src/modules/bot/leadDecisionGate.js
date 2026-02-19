@@ -28,7 +28,7 @@ export function leadDecisionGate({
   // Текущий STATUS_ID лида в CRM
   leadStatusId = null,
 
-  // Нормализованная стадия (по stageToStatusId), например: NEW/PRICING/CONTACT/ADDRESS/FINAL/IN_WORK/VIN_PICK
+  // Нормализованная стадия (по stageToStatusId), например: NEW/PRICING/CONTACT/FINAL/IN_WORK/VIN_PICK
   leadStageKey = null,
 
   // Есть ли уже офферы в сессии (важно для PRICING)
@@ -163,14 +163,13 @@ export function leadDecisionGate({
   // 2.3) Обычный текст без OEM.
   // Разрешаем Cortex только на "продажных" стадиях, где это реально нужно:
   // - PRICING: выбор варианта / уточнения (но только если есть offers)
-  // - CONTACT/ADDRESS/FINAL: сбор данных / подтверждение
+  // - CONTACT/FINAL: сбор данных / подтверждение
   if (requestType === "TEXT") {
     const stage = String(leadStageKey || "");
     const allowByStage =
       stage === "NEW" ||
       stage === "" ||
       stage === "CONTACT" ||
-      stage === "ADDRESS" ||
       stage === "FINAL" ||
       stage === "ABCP_CREATE" ||
       (stage === "PRICING" && hasOffers);

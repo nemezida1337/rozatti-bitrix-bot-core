@@ -68,6 +68,24 @@ function sleep(ms) {
   return new Promise((res) => setTimeout(res, ms));
 }
 
+function getRetryMaxAttempts() {
+  const raw = Number(process.env.ABCP_RETRY_MAX_ATTEMPTS || 3);
+  if (!Number.isFinite(raw) || raw < 1) return 3;
+  return Math.trunc(raw);
+}
+
+function getRetryBaseMs() {
+  const raw = Number(process.env.ABCP_RETRY_BASE_MS || 1500);
+  if (!Number.isFinite(raw) || raw < 0) return 1500;
+  return Math.trunc(raw);
+}
+
+function getRetryDelayMs(attempt) {
+  const n = Number(attempt);
+  if (!Number.isFinite(n) || n < 1) return getRetryBaseMs();
+  return getRetryBaseMs() * Math.max(1, 2 ** (Math.trunc(n) - 1));
+}
+
 function redactParamsForLogs(params) {
   if (!params || typeof params !== "object") return params;
   const out = { ...params };
@@ -135,7 +153,7 @@ function parseDeadline(raw) {
 /**
  * /search/articles — поиск по артикулу + (опционально) бренду.
  */
-async function queryArticle(oem, brand = "") {
+async function queryArticle(oem, brand = "", attempt = 1) {
   if (!ABCP_DOMAIN || !ABCP_LOGIN || !ABCP_USERPSW_MD5) return [];
 
   try {
@@ -185,12 +203,39 @@ async function queryArticle(oem, brand = "") {
     const message = err?.message;
 
     if (status === 429) {
+      const maxAttempts = getRetryMaxAttempts();
+      if (attempt >= maxAttempts) {
+        logger.warn(
+          {
+            ctx: CTX,
+            oem,
+            brand,
+            attempt,
+            maxAttempts,
+            url,
+            params: redactParamsForLogs(params),
+          },
+          "429 по OEM: лимит ретраев исчерпан",
+        );
+        return [];
+      }
+
+      const delayMs = getRetryDelayMs(attempt);
       logger.warn(
-        { ctx: CTX, oem, brand, url, params: redactParamsForLogs(params) },
-        `429 по OEM ${oem}, retry через 1.5 сек`,
+        {
+          ctx: CTX,
+          oem,
+          brand,
+          url,
+          params: redactParamsForLogs(params),
+          attempt,
+          maxAttempts,
+          delayMs,
+        },
+        `429 по OEM ${oem}, retry`,
       );
-      await sleep(1500);
-      return queryArticle(oem, brand);
+      if (delayMs > 0) await sleep(delayMs);
+      return queryArticle(oem, brand, attempt + 1);
     }
 
     if (status === 404 && data?.errorCode === 301) {

@@ -1,6 +1,7 @@
 // src/modules/crm/leads/safeUpdateLeadAndContact.js
 
 import { crmSettings } from "../../../config/settings.crm.js";
+import { makeBitrixClient } from "../../../core/bitrixClient.js";
 import { logger } from "../../../core/logger.js";
 import { getPortal } from "../../../core/store.js";
 import { detectOemsFromText } from "../../bot/oemDetector.js";
@@ -18,6 +19,12 @@ const SERVICE_FRAME_LINE_RE = /-{20,}/;
 const SERVICE_HEADER_RE = /^[^\n]{1,120}\[[^\]]{3,40}\]/m;
 const SERVICE_LEXEMES_RE =
   /(заказ\s*№|отслеживат|команда\s+[a-zа-я0-9_.-]+|интернет-?магазин|свяжутся)/i;
+
+function toPositiveInt(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.trunc(n);
+}
 
 /**
  * Нормализация телефона в формат 7XXXXXXXXXX
@@ -89,8 +96,10 @@ function buildProductRowsFromOffers(llm) {
 
 function mapStageToStatus(stage) {
   if (!stage) return null;
+  const aliases = crmSettings.stageAliases || {};
+  const normalizedStage = aliases[String(stage).toUpperCase()] || stage;
   const map = crmSettings.stageToStatusId || {};
-  return map[stage] || null;
+  return map[normalizedStage] || null;
 }
 
 function deriveContactUpdate(update_lead_fields, session) {
@@ -216,6 +225,106 @@ function deriveOemToSet({ chosen_offer_id, offers, oems }) {
   return { oemToSet: null, reason: "no_oem" };
 }
 
+function isLeadConvertedInSession(session) {
+  const conversion = session?.lastLeadConversion;
+  if (!conversion || !conversion.ok) return false;
+
+  const dealId = toPositiveInt(conversion.dealId);
+  if (dealId) return true;
+
+  const reason = String(conversion.reason || "").trim().toUpperCase();
+  return (
+    reason.includes("CONVERTED") ||
+    reason.includes("DEAL_CREATED_BY_FALLBACK")
+  );
+}
+
+function computeRowsOpportunity(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  let total = 0;
+  for (const row of list) {
+    const price = Number(row?.PRICE ?? row?.price ?? 0);
+    const qty = Number(row?.QUANTITY ?? row?.quantity ?? 1);
+    if (!Number.isFinite(price) || !Number.isFinite(qty)) continue;
+    total += price * qty;
+  }
+  return Number.isFinite(total) && total > 0 ? total : null;
+}
+
+async function syncConvertedDeal({
+  portal,
+  portalCfg,
+  leadId,
+  dealId,
+  ensuredContactId = null,
+  rows = [],
+  ctx,
+}) {
+  const dealIdNum = toPositiveInt(dealId);
+  const leadIdNum = toPositiveInt(leadId);
+  if (!dealIdNum || !leadIdNum || !portalCfg?.baseUrl || !portalCfg?.accessToken) return;
+
+  const api = makeBitrixClient({
+    domain: portal,
+    baseUrl: portalCfg.baseUrl,
+    accessToken: portalCfg.accessToken,
+  });
+
+  let contactId = toPositiveInt(ensuredContactId);
+  if (!contactId) {
+    try {
+      const lead = await api.call("crm.lead.get", { id: leadIdNum });
+      contactId = toPositiveInt(lead?.CONTACT_ID);
+    } catch (err) {
+      logger.warn(
+        { ctx, portal, leadId: leadIdNum, dealId: dealIdNum, err: String(err) },
+        "Не удалось получить CONTACT_ID лида для синхронизации сделки",
+      );
+    }
+  }
+
+  const rowsToSet = Array.isArray(rows) ? rows : [];
+  if (rowsToSet.length > 0) {
+    try {
+      await api.call("crm.deal.productrows.set", {
+        id: dealIdNum,
+        rows: rowsToSet,
+      });
+    } catch (err) {
+      logger.warn(
+        { ctx, portal, leadId: leadIdNum, dealId: dealIdNum, err: String(err) },
+        "Не удалось записать product rows в сделку после конверсии",
+      );
+    }
+  }
+
+  const fields = {
+    LEAD_ID: leadIdNum,
+  };
+
+  if (contactId) {
+    fields.CONTACT_ID = contactId;
+    fields.CONTACT_IDS = [contactId];
+  }
+
+  const total = computeRowsOpportunity(rowsToSet);
+  if (total !== null) {
+    fields.OPPORTUNITY = total;
+  }
+
+  try {
+    await api.call("crm.deal.update", {
+      id: dealIdNum,
+      fields,
+    });
+  } catch (err) {
+    logger.warn(
+      { ctx, portal, leadId: leadIdNum, dealId: dealIdNum, fields, err: String(err) },
+      "Не удалось синхронизировать сделку после конверсии",
+    );
+  }
+}
+
 export async function safeUpdateLeadAndContact(params) {
   const {
     portal,
@@ -296,7 +405,10 @@ export async function safeUpdateLeadAndContact(params) {
     const leadFieldsToUpdate = {};
 
     const statusId = mapStageToStatus(stage);
-    if (statusId) {
+    const successStatusId = crmSettings?.stageToStatusId?.SUCCESS || null;
+    if (isLeadConvertedInSession(session) && successStatusId) {
+      leadFieldsToUpdate.STATUS_ID = successStatusId;
+    } else if (statusId) {
       leadFieldsToUpdate.STATUS_ID = statusId;
     }
 
@@ -420,13 +532,14 @@ export async function safeUpdateLeadAndContact(params) {
     const isFinalStage = isFinalStageForEnrichment(stage);
     let effectiveContactUpdate =
       contact_update || deriveContactUpdate(update_lead_fields, session);
+    let ensuredContactId = null;
 
     if (isFinalStage && effectiveContactUpdate) {
       const phone = normalizePhone(
         effectiveContactUpdate.phone || session?.phone,
       );
       if (phone) {
-        await ensureContact(portal, leadId, {
+        ensuredContactId = await ensureContact(portal, leadId, {
           NAME: effectiveContactUpdate.name,
           LAST_NAME: effectiveContactUpdate.last_name,
           SECOND_NAME: effectiveContactUpdate.second_name,
@@ -439,15 +552,28 @@ export async function safeUpdateLeadAndContact(params) {
     // 3) PRODUCT ROWS
     // =========================
 
+    let rowsForLead = [];
     if (isFinalStage) {
-      const rows =
-        product_rows.length > 0
-          ? product_rows
-          : buildProductRowsFromOffers(llm);
+      rowsForLead = product_rows.length > 0
+        ? product_rows
+        : buildProductRowsFromOffers(llm);
 
-      if (rows.length > 0) {
-        await setLeadProductRows(portal, leadId, rows);
+      if (rowsForLead.length > 0) {
+        await setLeadProductRows(portal, leadId, rowsForLead);
       }
+    }
+
+    const convertedDealId = toPositiveInt(session?.lastLeadConversion?.dealId);
+    if (isFinalStage && convertedDealId) {
+      await syncConvertedDeal({
+        portal,
+        portalCfg,
+        leadId,
+        dealId: convertedDealId,
+        ensuredContactId,
+        rows: rowsForLead,
+        ctx,
+      });
     }
 
     logger.info(

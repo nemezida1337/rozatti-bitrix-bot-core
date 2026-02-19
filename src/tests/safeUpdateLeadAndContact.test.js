@@ -894,6 +894,128 @@ test("safeUpdateLeadAndContact: FINAL with chosen_offer_id array uses selected o
   }
 });
 
+test("safeUpdateLeadAndContact: keeps SUCCESS status when lead is already converted in session", async () => {
+  const fake = await startFakeBitrix();
+  const domain = "audit-safe-converted-status-lock.bitrix24.ru";
+
+  upsertPortal(domain, {
+    domain,
+    baseUrl: fake.baseUrl,
+    accessToken: "token-21",
+    refreshToken: "refresh-21",
+  });
+
+  try {
+    await safeUpdateLeadAndContact({
+      portal: domain,
+      dialogId: "chat2021",
+      chatId: "2021",
+      session: {
+        leadId: 1021,
+        state: { stage: "FINAL" },
+        lastLeadConversion: {
+          ok: true,
+          reason: "DEAL_CREATED_BY_FALLBACK",
+          dealId: 7001,
+        },
+      },
+      llm: {
+        stage: "FINAL",
+        action: "reply",
+        oems: ["OEM-LOCK"],
+        offers: [{ id: 1, oem: "OEM-LOCK", price: 1200, brand: "B" }],
+        chosen_offer_id: 1,
+        update_lead_fields: {
+          PHONE: "+79995554433",
+          DELIVERY_ADDRESS: "Москва, ул. Тверская, д. 1",
+        },
+      },
+      lastUserMessage: "подтверждаю",
+      usedBackend: "HF_CORTEX",
+    });
+
+    const leadUpdateCalls = fake.calls.filter((c) => c.method === "crm.lead.update");
+    const statusWrite = leadUpdateCalls.find((c) =>
+      Object.prototype.hasOwnProperty.call(c.form, "fields[STATUS_ID]"),
+    );
+    assert.ok(statusWrite, "STATUS_ID must be written");
+    assert.equal(statusWrite.form["fields[STATUS_ID]"], crmSettings.stageToStatusId.SUCCESS);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("safeUpdateLeadAndContact: syncs converted deal bindings and rows on FINAL", async () => {
+  const fake = await startFakeBitrix({
+    resolvePayload: ({ method }) => {
+      if (method === "crm.lead.get") {
+        return { result: { CONTACT_ID: 777 } };
+      }
+      return undefined;
+    },
+  });
+  const domain = "audit-safe-converted-deal-sync.bitrix24.ru";
+
+  upsertPortal(domain, {
+    domain,
+    baseUrl: fake.baseUrl,
+    accessToken: "token-22",
+    refreshToken: "refresh-22",
+  });
+
+  try {
+    await safeUpdateLeadAndContact({
+      portal: domain,
+      dialogId: "chat2022",
+      chatId: "2022",
+      session: {
+        leadId: 1022,
+        phone: "+79990001122",
+        state: { stage: "FINAL" },
+        lastLeadConversion: {
+          ok: true,
+          reason: "DEAL_CREATED_BY_FALLBACK",
+          dealId: 7022,
+        },
+      },
+      llm: {
+        stage: "FINAL",
+        action: "reply",
+        oems: ["OEM-7022"],
+        offers: [],
+        chosen_offer_id: null,
+        product_rows: [
+          {
+            PRODUCT_NAME: "B OEM-7022",
+            PRICE: 3210,
+            QUANTITY: 1,
+          },
+        ],
+        update_lead_fields: {
+          PHONE: "+79990001122",
+          DELIVERY_ADDRESS: "Москва, ул. Ленина, д. 10",
+        },
+      },
+      lastUserMessage: "готово",
+      usedBackend: "HF_CORTEX",
+    });
+
+    const dealRowsSet = fake.calls.find((c) => c.method === "crm.deal.productrows.set");
+    assert.ok(dealRowsSet, "crm.deal.productrows.set must be called for converted deal");
+    assert.equal(dealRowsSet.form["id"], "7022");
+    assert.equal(dealRowsSet.form["rows[0][PRODUCT_NAME]"], "B OEM-7022");
+
+    const dealUpdate = fake.calls.find((c) => c.method === "crm.deal.update");
+    assert.ok(dealUpdate, "crm.deal.update must be called for converted deal sync");
+    assert.equal(dealUpdate.form["id"], "7022");
+    assert.equal(dealUpdate.form["fields[LEAD_ID]"], "1022");
+    assert.equal(dealUpdate.form["fields[CONTACT_ID]"], "777");
+    assert.equal(dealUpdate.form["fields[OPPORTUNITY]"], "3210");
+  } finally {
+    await fake.close();
+  }
+});
+
 test("safeUpdateLeadAndContact: addLeadComment error is caught and logged in local catch", async () => {
   const fake = await startFakeBitrix({
     resolvePayload: ({ method }) => {

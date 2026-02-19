@@ -8,6 +8,8 @@ const originalEnv = {
   ABCP_DOMAIN: process.env.ABCP_DOMAIN,
   ABCP_KEY: process.env.ABCP_KEY,
   ABCP_USERPSW_MD5: process.env.ABCP_USERPSW_MD5,
+  ABCP_RETRY_MAX_ATTEMPTS: process.env.ABCP_RETRY_MAX_ATTEMPTS,
+  ABCP_RETRY_BASE_MS: process.env.ABCP_RETRY_BASE_MS,
 };
 
 let stubGetImpl = async () => ({ data: [] });
@@ -21,6 +23,12 @@ function restoreEnv() {
 
   if (originalEnv.ABCP_USERPSW_MD5 === undefined) delete process.env.ABCP_USERPSW_MD5;
   else process.env.ABCP_USERPSW_MD5 = originalEnv.ABCP_USERPSW_MD5;
+
+  if (originalEnv.ABCP_RETRY_MAX_ATTEMPTS === undefined) delete process.env.ABCP_RETRY_MAX_ATTEMPTS;
+  else process.env.ABCP_RETRY_MAX_ATTEMPTS = originalEnv.ABCP_RETRY_MAX_ATTEMPTS;
+
+  if (originalEnv.ABCP_RETRY_BASE_MS === undefined) delete process.env.ABCP_RETRY_BASE_MS;
+  else process.env.ABCP_RETRY_BASE_MS = originalEnv.ABCP_RETRY_BASE_MS;
 }
 
 process.env.ABCP_DOMAIN = "abcp.test";
@@ -139,4 +147,26 @@ test("abcp: handles queryBrands error", { concurrency: false }, async () => {
 
   const out = await mod.searchManyOEMs(["ERR001"]);
   assert.equal(out.ERR001.offers.length, 0);
+});
+
+test("abcp: limits 429 retries for search/articles", { concurrency: false }, async () => {
+  process.env.ABCP_RETRY_MAX_ATTEMPTS = "2";
+  process.env.ABCP_RETRY_BASE_MS = "0";
+
+  let articleCalls = 0;
+  stubGetImpl = async (url, { params }) => {
+    if (url === "/search/brands") return { data: [{ brand: "BMW" }] };
+    if (url === "/search/articles") {
+      articleCalls += 1;
+      const err = new Error("too many requests");
+      err.response = { status: 429, data: { errorCode: 429 } };
+      err.config = { url, params };
+      throw err;
+    }
+    return { data: [] };
+  };
+
+  const out = await mod.searchManyOEMs(["R42901"]);
+  assert.equal(out.R42901.offers.length, 0);
+  assert.equal(articleCalls, 2);
 });
