@@ -409,6 +409,11 @@ function normalizeAbcpResponse(oem, rows) {
       oem: offerOem,
       isAnalog,
       isOriginal,
+      // Поля для последующего заказа через basket/add
+      itemKey: row.itemKey || row.item_key || null,
+      supplierCode: row.supplierCode || row.supplier_code || null,
+      code: row.code || null,
+      numberFix: row.numberFix || row.number_fix || null,
     });
   }
 

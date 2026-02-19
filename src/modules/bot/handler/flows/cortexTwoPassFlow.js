@@ -7,10 +7,46 @@ import { callCortexLeadSales } from "../../../../core/hfCortexClient.js";
 import { logger } from "../../../../core/logger.js";
 import { safeUpdateLeadAndContact } from "../../../crm/leads.js";
 import { abcpLookupFromText } from "../../../external/pricing/abcp.js";
+import { createAbcpOrderFromSession } from "../../../external/pricing/abcpOrder.js";
 import { saveSession } from "../../sessionStore.js";
 import { sendChatReplyIfAllowed } from "../shared/chatReply.js";
 import { mapCortexResultToLlmResponse } from "../shared/cortex.js";
 import { normalizeOemCandidates, applyLlmToSession } from "../shared/session.js";
+
+function shouldCreateAbcpOrder(llm, session) {
+  const llmStage = String(llm?.stage || "").toUpperCase();
+  const sessionStage = String(session?.state?.stage || "").toUpperCase();
+  const stage = llmStage || sessionStage;
+  if (stage !== "ABCP_CREATE") return false;
+
+  if (session?.lastAbcpOrder && Array.isArray(session.lastAbcpOrder.orderNumbers)) {
+    return session.lastAbcpOrder.orderNumbers.length === 0;
+  }
+
+  return true;
+}
+
+async function tryCreateAbcpOrderIfNeeded({ llm, session, dialogId }) {
+  if (!shouldCreateAbcpOrder(llm, session)) return llm;
+
+  const created = await createAbcpOrderFromSession({ session, llm, dialogId });
+
+  session.lastAbcpOrder = {
+    ok: !!created.ok,
+    reason: created.reason || null,
+    orderNumbers: Array.isArray(created.orderNumbers) ? created.orderNumbers : [],
+    at: Date.now(),
+  };
+
+  if (created.ok && created.orderNumbers.length > 0) {
+    const suffix = ` Заказ в ABCP оформлен: №${created.orderNumbers.join(", ")}.`;
+    llm.reply = `${String(llm.reply || "").trim()}${suffix}`.trim();
+  } else if (!created.ok && !String(llm.reply || "").trim()) {
+    llm.reply = "Не удалось автоматически оформить заказ в ABCP, передаю менеджеру.";
+  }
+
+  return llm;
+}
 
 export async function runCortexTwoPassFlow({
   api,
@@ -63,6 +99,7 @@ export async function runCortexTwoPassFlow({
   }
 
   let llm1 = mapCortexResultToLlmResponse(cortexRaw1);
+  llm1 = await tryCreateAbcpOrderIfNeeded({ llm: llm1, session, dialogId });
 
   // ✅ NEW: фиксируем кандидатов OEM при запросе ABCP
   if (llm1.action === "abcp_lookup" && Array.isArray(llm1.oems) && llm1.oems.length > 0) {
@@ -139,6 +176,7 @@ export async function runCortexTwoPassFlow({
         }
 
         const llm2 = mapCortexResultToLlmResponse(cortexRaw2);
+        await tryCreateAbcpOrderIfNeeded({ llm: llm2, session, dialogId });
 
         const noProgress =
           llm2.action === "abcp_lookup" && (!llm2.offers || llm2.offers.length === 0);
