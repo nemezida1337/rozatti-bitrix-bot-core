@@ -18,6 +18,9 @@ import {
 // 2) Optional application_token check (сравнение с сохраненным в store)
 const EVENTS_SECRET = process.env.BITRIX_EVENTS_SECRET || null;
 const VALIDATE_APP_TOKEN = process.env.BITRIX_VALIDATE_APP_TOKEN === "1";
+function isOnImMessageAddAllowed() {
+  return process.env.BITRIX_ALLOW_ONIMMESSAGEADD === "1";
+}
 
 /** @typedef {Record<string, any>} AnyRecord */
 
@@ -130,6 +133,7 @@ const EVENT_DUMP_DIR = process.env.EVENT_DUMP_DIR || "./data/events";
 function shouldDumpEvent(event) {
   return (
     event === "onimbotmessageadd" ||
+    event === "onimmessageadd" ||
     event === "onimcommandadd" ||
     event === "onappinstall" ||
     event === "onappinstalled"
@@ -344,8 +348,8 @@ export async function registerRoutes(app) {
         }
       }
 
-      // === ДОП. ЛОГ ДЛЯ onImBotMessageAdd — ВИДИМ ТЕКСТ И DIALOG_ID ===
-      if (event === "onimbotmessageadd") {
+      // === ДОП. ЛОГ ДЛЯ onImBotMessageAdd / onImMessageAdd — ВИДИМ ТЕКСТ И DIALOG_ID ===
+      if (event === "onimbotmessageadd" || event === "onimmessageadd") {
         const params = body?.data?.PARAMS || body?.data?.params || {};
         const logPayload = {
           domain,
@@ -362,6 +366,14 @@ export async function registerRoutes(app) {
       // === МАРШРУТИЗАЦИЯ СОБЫТИЙ ===
 
       if (event === "onimbotmessageadd") {
+        await handleOnImBotMessageAdd({ portal, body, domain });
+        return reply.send({ result: "ok" });
+      }
+      if (event === "onimmessageadd") {
+        if (!isOnImMessageAddAllowed()) {
+          logger.warn({ domain }, "onimmessageadd ignored (set BITRIX_ALLOW_ONIMMESSAGEADD=1 to enable)");
+          return reply.send({ result: "noop" });
+        }
         await handleOnImBotMessageAdd({ portal, body, domain });
         return reply.send({ result: "ok" });
       }

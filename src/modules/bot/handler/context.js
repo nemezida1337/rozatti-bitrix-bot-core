@@ -59,8 +59,11 @@ export async function buildContext({ portal, body, domain: domainHint = null }) 
     domain && dialogId ? getSession(domain, dialogId) || null : null;
   const leadId = session?.leadId || null;
 
-  const detectedOems = detectOemsFromText(msg?.text || "");
-  const isSimpleOem = isSimpleOemQuery(msg?.text || "", detectedOems);
+  const isSystemLike = !!msg?.isSystemLike;
+  const detectedOems = isSystemLike ? [] : detectOemsFromText(msg?.text || "");
+  const isSimpleOem = isSystemLike
+    ? false
+    : isSimpleOemQuery(msg?.text || "", detectedOems);
 
   let leadRaw = null;
   let statusId = null;
@@ -101,6 +104,17 @@ export async function buildContext({ portal, body, domain: domainHint = null }) 
       messageId: msg?.messageId || null,
       text: msg?.text || "",
       hasAttachments: !!(msg?.attachments && msg.attachments.length),
+      isForwarded: !!msg?.isForwarded,
+      isSystemLike,
+      chatEntityType:
+        body?.data?.PARAMS?.CHAT_ENTITY_TYPE ||
+        body?.data?.params?.CHAT_ENTITY_TYPE ||
+        null,
+      userFlags: {
+        isBot: body?.data?.USER?.IS_BOT || null,
+        isConnector: body?.data?.USER?.IS_CONNECTOR || null,
+        isNetwork: body?.data?.USER?.IS_NETWORK || null,
+      },
     },
     lead: {
       leadId,

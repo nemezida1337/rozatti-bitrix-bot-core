@@ -288,6 +288,91 @@ test("bitrix route advanced scenarios", async (t) => {
     }
   });
 
+  await t.test("onimmessageadd is ignored by default and returns noop", async () => {
+    resetStoreFile();
+    const app = await buildServer();
+    const domain = "audit-onimmessageadd-disabled.bitrix24.ru";
+
+    upsertPortal(domain, {
+      domain,
+      baseUrl: "http://127.0.0.1:1/rest",
+      accessToken: "token-onim-disabled",
+      refreshToken: "refresh-onim-disabled",
+    });
+
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: eventsUrl(),
+        payload: {
+          event: "onimmessageadd",
+          data: {
+            AUTH: { domain },
+            PARAMS: {
+              DIALOG_ID: "chat6111",
+              CHAT_ID: "6111",
+              FROM_USER_ID: "51",
+              MESSAGE_ID: "901",
+              MESSAGE: "internal message",
+            },
+          },
+        },
+      });
+
+      assert.equal(res.statusCode, 200);
+      assert.match(res.body, /"result":"noop"/);
+    } finally {
+      await app.close();
+    }
+  });
+
+  await t.test("onimmessageadd is routed when BITRIX_ALLOW_ONIMMESSAGEADD=1", async () => {
+    resetStoreFile();
+    const prev = process.env.BITRIX_ALLOW_ONIMMESSAGEADD;
+    process.env.BITRIX_ALLOW_ONIMMESSAGEADD = "1";
+    const app = await buildServer();
+    const domain = "audit-onimmessageadd-enabled.bitrix24.ru";
+
+    upsertPortal(domain, {
+      domain,
+      baseUrl: "http://127.0.0.1:1/rest",
+      accessToken: "token-onim-enabled",
+      refreshToken: "refresh-onim-enabled",
+    });
+
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: eventsUrl(),
+        payload: {
+          event: "onimmessageadd",
+          data: {
+            AUTH: { domain },
+            PARAMS: {
+              DIALOG_ID: "chat6112",
+              CHAT_ID: "6112",
+              FROM_USER_ID: "52",
+              MESSAGE_ID: "902",
+              MESSAGE: "",
+              CHAT_ENTITY_TYPE: "LINES",
+            },
+            USER: {
+              IS_CONNECTOR: "Y",
+              IS_BOT: "N",
+            },
+          },
+        },
+      });
+
+      assert.equal(res.statusCode, 200);
+      assert.match(res.body, /"result":"ok"/);
+    } finally {
+      if (prev == null) delete process.env.BITRIX_ALLOW_ONIMMESSAGEADD;
+      else process.env.BITRIX_ALLOW_ONIMMESSAGEADD = prev;
+      await app.close();
+    }
+  });
+
   await t.test("unknown event returns noop", async () => {
     resetStoreFile();
     const app = await buildServer();

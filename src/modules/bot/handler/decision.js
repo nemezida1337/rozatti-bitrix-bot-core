@@ -47,9 +47,16 @@ function isVinLike(text) {
   return c.length === 17 && VIN_ALLOWED_17_REGEX.test(c);
 }
 
-function inferAuthorType(_ctx) {
-  // В OpenLines обычно приходит клиент.
-  // Если дальше появится точный сигнал из Bitrix — можно расширить.
+function inferAuthorType(ctx) {
+  const userFlags = ctx?.message?.userFlags || {};
+  const isBot = String(userFlags?.isBot || "").toUpperCase() === "Y";
+  const isConnector = String(userFlags?.isConnector || "").toUpperCase() === "Y";
+  const chatEntityType = String(ctx?.message?.chatEntityType || "").toUpperCase();
+  const isSystemLike = !!ctx?.message?.isSystemLike;
+
+  if (isBot || isSystemLike) return "system";
+  if (chatEntityType === "LINES" && isConnector) return "client";
+  if (chatEntityType === "LINES") return "manager";
   return "client";
 }
 

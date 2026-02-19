@@ -8,6 +8,7 @@
 
 import { makeBitrixClient } from "../../../core/bitrixClient.js";
 import { logger } from "../../../core/logger.js";
+import { normalizeIncomingMessage } from "../../../core/messageModel.js";
 import { getPortal } from "../../../core/store.js";
 import { saveSession } from "../sessionStore.js";
 
@@ -16,6 +17,8 @@ import { buildDecision } from "./decision.js";
 import { runCortexTwoPassFlow } from "./flows/cortexTwoPassFlow.js";
 import { runFastOemFlow } from "./flows/fastOemFlow.js";
 import { runManagerOemTriggerFlow } from "./flows/managerOemTriggerFlow.js";
+import { sendChatReplyIfAllowed } from "./shared/chatReply.js";
+import { resolveSmallTalk } from "./shared/smallTalk.js";
 
 
 // -----------------------------
@@ -78,10 +81,12 @@ function ensureSession(dialogId, session) {
 }
 
 export async function processIncomingBitrixMessage({ body, portal, domain }) {
+  const normalized = normalizeIncomingMessage(body) || {};
   // Стабильный ключ для локов
-  const dialogId = body?.data?.PARAMS?.DIALOG_ID || body?.data?.PARAMS?.CHAT_ID || "unknown";
+  const dialogId = normalized?.dialogId || "unknown";
   const domainKey =
     domain ||
+    normalized?.portal ||
     body?._portal ||
     body?.auth?.domain ||
     body?.data?.AUTH?.domain ||
@@ -157,16 +162,19 @@ export async function processIncomingBitrixMessage({ body, portal, domain }) {
     }
 
     // --- Fast OEM flow (simple OEM query, NEW stage) ---
-    const fastHandled = await runFastOemFlow({
-      api,
-      portalDomain: ctx.domain,
-      portalCfg: ctx.portal,
-      dialogId: ctx.message.dialogId,
-      chatId: ctx.message.chatId,
-      text: ctx.message.text,
-      session,
-      baseCtx: "modules/bot/handler/v2",
-    });
+    const canRunFastOem = !ctx?.message?.isSystemLike && !ctx?.message?.isForwarded;
+    const fastHandled = canRunFastOem
+      ? await runFastOemFlow({
+          api,
+          portalDomain: ctx.domain,
+          portalCfg: ctx.portal,
+          dialogId: ctx.message.dialogId,
+          chatId: ctx.message.chatId,
+          text: ctx.message.text,
+          session,
+          baseCtx: "modules/bot/handler/v2",
+        })
+      : false;
 
     if (fastHandled) {
       logger.info({ dialogId }, "[V2] handled by fast OEM flow");
@@ -175,6 +183,34 @@ export async function processIncomingBitrixMessage({ body, portal, domain }) {
 
     // --- Decision gate ---
     const { gateInput, decision } = buildDecision(ctx);
+
+    // --- Small talk / off-topic / how-to (client-only) ---
+    const smallTalk =
+      gateInput?.authorType === "client" &&
+      ctx?.message?.text &&
+      !ctx?.hasImage &&
+      (!ctx?.detectedOems || ctx.detectedOems.length === 0)
+        ? resolveSmallTalk(ctx.message.text)
+        : null;
+
+    if (smallTalk) {
+      await sendChatReplyIfAllowed({
+        api,
+        portalDomain: ctx.domain,
+        portalCfg: ctx.portal,
+        dialogId: ctx.message.dialogId,
+        leadId: session.leadId,
+        message: smallTalk.reply,
+      });
+
+      session.lastSmallTalkIntent = smallTalk.intent;
+      session.lastSmallTalkTopic = smallTalk.topic || null;
+      session.lastSmallTalkAt = Date.now();
+      saveSession(ctx.domain, ctx.message.dialogId, session);
+
+      logger.info({ dialogId, smallTalkIntent: smallTalk.intent }, "[V2] handled by small talk");
+      return;
+    }
 
     logger.info(
       { dialogId, gateInput, decision },

@@ -41,6 +41,7 @@ test("context builder: resolves domain from lowercase auth and works without ses
   assert.equal(ctx.portal.hasToken, false);
   assert.equal(ctx.lead.leadId, null);
   assert.equal(ctx.message.text, "hello");
+  assert.equal(ctx.message.isSystemLike, false);
 });
 
 test("context builder: reads lead status and OEM from CRM when session has leadId", async () => {
@@ -319,4 +320,29 @@ test("context builder: marks image flags when FILES are present in lowercase par
   assert.equal(ctx.domain, domain);
   assert.equal(ctx.message.hasAttachments, true);
   assert.equal(ctx.hasImage, true);
+});
+
+test("context builder: suppresses OEM detection for system-like framed messages", async () => {
+  const domain = "audit-context-system-like.bitrix24.ru";
+  const body = {
+    event: "onimbotmessageadd",
+    data: {
+      auth: { domain },
+      params: {
+        DIALOG_ID: "chat-ctx-009",
+        CHAT_ID: "9",
+        MESSAGE:
+          "------------------------------------------------------\n" +
+          "Rozatti[19:15:06]\n" +
+          "добрый вечер, завтра с вами свяжутся\n" +
+          "------------------------------------------------------",
+      },
+    },
+  };
+
+  const ctx = await buildContext({ portal: null, body });
+
+  assert.equal(ctx.message.isSystemLike, true);
+  assert.deepEqual(ctx.detectedOems, []);
+  assert.equal(ctx.isSimpleOem, false);
 });

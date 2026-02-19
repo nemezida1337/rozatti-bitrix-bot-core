@@ -7,7 +7,16 @@ import { getSession, saveSession } from "../modules/bot/sessionStore.js";
 
 process.env.TOKENS_FILE = "./data/portals.handlerIndex.test.json";
 
-function makeBody({ domain, dialogId, chatId, messageId, message }) {
+function makeBody({
+  domain,
+  dialogId,
+  chatId,
+  messageId,
+  message,
+  chatEntityType,
+  isConnector,
+  isBot,
+}) {
   return {
     event: "onimbotmessageadd",
     data: {
@@ -17,6 +26,11 @@ function makeBody({ domain, dialogId, chatId, messageId, message }) {
         CHAT_ID: chatId,
         MESSAGE_ID: messageId == null ? undefined : String(messageId),
         MESSAGE: message,
+        CHAT_ENTITY_TYPE: chatEntityType,
+      },
+      USER: {
+        IS_CONNECTOR: isConnector,
+        IS_BOT: isBot,
       },
     },
   };
@@ -114,3 +128,34 @@ test("handler index: manual mode lock path saves session and exits silently", as
   assert.equal(typeof session.lastProcessedAt, "number");
 });
 
+test("handler index: small talk is ignored for manager messages", async () => {
+  const domain = "audit-handler-index-manager-smalltalk.bitrix24.ru";
+  const dialogId = "chat-index-manager-smalltalk-1";
+
+  upsertPortal(domain, {
+    domain,
+    baseUrl: "http://127.0.0.1:9/rest",
+    accessToken: "token-index-manager-smalltalk",
+    refreshToken: "refresh-index-manager-smalltalk",
+  });
+
+  await processIncomingBitrixMessage({
+    domain,
+    body: makeBody({
+      domain,
+      dialogId,
+      chatId: "904",
+      messageId: 11,
+      message: "как оформить заказ?",
+      chatEntityType: "LINES",
+      isConnector: "N",
+      isBot: "N",
+    }),
+  });
+
+  const session = getSession(domain, dialogId);
+  assert.ok(session);
+  assert.equal(session.lastProcessedMessageId, 11);
+  assert.equal(session.lastSmallTalkIntent, undefined);
+  assert.equal(session.lastSmallTalkTopic, undefined);
+});

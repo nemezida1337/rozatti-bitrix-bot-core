@@ -23,6 +23,21 @@ function makeBody({ domain, dialogId, chatId, messageId, message }) {
   };
 }
 
+function makeBodyLowercaseParams({ domain, dialogId, chatId, messageId, message }) {
+  return {
+    event: "onimbotmessageadd",
+    data: {
+      AUTH: { domain },
+      params: {
+        DIALOG_ID: dialogId,
+        CHAT_ID: chatId,
+        MESSAGE_ID: String(messageId),
+        MESSAGE: message,
+      },
+    },
+  };
+}
+
 async function startFakeBitrixWithFirstDelay(delayMs = 250) {
   let reqCount = 0;
   const server = http.createServer((req, res) => {
@@ -219,6 +234,80 @@ test("handler lock: different dialogs are processed in parallel", async () => {
 
     const s1 = getSession(domain, "chat4101");
     const s2 = getSession(domain, "chat4102");
+    assert.equal(s1?.lastProcessedMessageId, 1);
+    assert.equal(s2?.lastProcessedMessageId, 1);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("handler lock: different dialogs in lowercase data.params are processed in parallel", async () => {
+  const fake = await startFakeBitrixWithFixedDelay(180);
+  const domain = "audit-lock-parallel-lowercase.bitrix24.ru";
+
+  upsertPortal(domain, {
+    domain,
+    baseUrl: fake.baseUrl,
+    accessToken: "token-lock-parallel-lowercase",
+    refreshToken: "refresh-lock-parallel-lowercase",
+  });
+
+  saveSession(domain, "chat4201", {
+    dialogId: "chat4201",
+    leadId: 5201,
+    state: { stage: "NEW", offers: [] },
+    lastProcessedMessageId: 0,
+    mode: "auto",
+    manualAckSent: false,
+    oem_candidates: [],
+    lastSeenLeadOem: null,
+  });
+
+  saveSession(domain, "chat4202", {
+    dialogId: "chat4202",
+    leadId: 5202,
+    state: { stage: "NEW", offers: [] },
+    lastProcessedMessageId: 0,
+    mode: "auto",
+    manualAckSent: false,
+    oem_candidates: [],
+    lastSeenLeadOem: null,
+  });
+
+  const t0 = Date.now();
+
+  const p1 = processIncomingBitrixMessage({
+    domain,
+    portal: { domain, baseUrl: fake.baseUrl, accessToken: "token-lock-parallel-lowercase" },
+    body: makeBodyLowercaseParams({
+      domain,
+      dialogId: "chat4201",
+      chatId: "4201",
+      messageId: 1,
+      message: "",
+    }),
+  });
+
+  const p2 = processIncomingBitrixMessage({
+    domain,
+    portal: { domain, baseUrl: fake.baseUrl, accessToken: "token-lock-parallel-lowercase" },
+    body: makeBodyLowercaseParams({
+      domain,
+      dialogId: "chat4202",
+      chatId: "4202",
+      messageId: 1,
+      message: "",
+    }),
+  });
+
+  try {
+    await Promise.all([p1, p2]);
+    const elapsed = Date.now() - t0;
+
+    assert.equal(elapsed < 650, true);
+
+    const s1 = getSession(domain, "chat4201");
+    const s2 = getSession(domain, "chat4202");
     assert.equal(s1?.lastProcessedMessageId, 1);
     assert.equal(s2?.lastProcessedMessageId, 1);
   } finally {
