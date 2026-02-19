@@ -26,6 +26,52 @@ import { logger } from "./logger.js";
 
 /** @typedef {Record<string, PortalRecord>} PortalStore */
 
+/**
+ * @param {PortalRecord|undefined} record
+ * @param {string} [domainHint]
+ * @returns {PortalRecord}
+ */
+function normalizePortalRecord(record, domainHint) {
+  const src = record || {};
+  /** @type {PortalRecord} */
+  const out = { ...src };
+
+  const accessToken = src.accessToken || src.access_token;
+  const refreshToken = src.refreshToken || src.refresh_token;
+  const memberId = src.memberId || src.member_id;
+  const applicationToken = src.applicationToken || src.application_token;
+  const userIdRaw = src.userId ?? src.user_id;
+  const domain = src.domain || domainHint;
+
+  if (accessToken) out.accessToken = String(accessToken);
+  if (refreshToken) out.refreshToken = String(refreshToken);
+  if (memberId) out.memberId = String(memberId);
+  if (applicationToken) out.applicationToken = String(applicationToken);
+  if (userIdRaw != null) out.userId = String(userIdRaw);
+  if (domain) out.domain = String(domain);
+
+  delete out.access_token;
+  delete out.refresh_token;
+  delete out.member_id;
+  delete out.application_token;
+  delete out.user_id;
+
+  return out;
+}
+
+/**
+ * @param {PortalStore} store
+ * @returns {PortalStore}
+ */
+function normalizeStore(store) {
+  /** @type {PortalStore} */
+  const out = {};
+  for (const [domain, rec] of Object.entries(store || {})) {
+    out[domain] = normalizePortalRecord(rec, domain);
+  }
+  return out;
+}
+
 function getFilePath() {
   const tokensFile = process.env.TOKENS_FILE || "./data/portals.json";
   return path.resolve(process.cwd(), tokensFile);
@@ -36,7 +82,8 @@ export function loadStore() {
   const filePath = getFilePath();
   try {
     if (!fs.existsSync(filePath)) return {};
-    return /** @type {PortalStore} */ (JSON.parse(fs.readFileSync(filePath, "utf8")));
+    const raw = /** @type {PortalStore} */ (JSON.parse(fs.readFileSync(filePath, "utf8")));
+    return normalizeStore(raw);
   } catch (e) {
     logger.error({ e }, "Failed to load token store");
     return {};
@@ -52,7 +99,7 @@ export function saveStore(obj) {
 
     // Атомарная запись: пишем во временный файл и затем делаем rename.
     const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
-    const json = JSON.stringify(obj, null, 2);
+    const json = JSON.stringify(normalizeStore(obj), null, 2);
 
     fs.writeFileSync(tmpPath, json, "utf8");
 
@@ -97,7 +144,15 @@ export function saveStore(obj) {
  */
 export function upsertPortal(domain, data) {
   const store = loadStore();
-  store[domain] = { ...(store[domain] || {}), ...data, updatedAt: new Date().toISOString() };
+  store[domain] = normalizePortalRecord(
+    {
+      ...(store[domain] || {}),
+      ...data,
+      domain,
+      updatedAt: new Date().toISOString(),
+    },
+    domain,
+  );
   saveStore(store);
   return store[domain];
 }
@@ -108,5 +163,7 @@ export function upsertPortal(domain, data) {
  */
 export function getPortal(domain) {
   const store = loadStore();
-  return store[domain];
+  const portal = store[domain];
+  if (!portal) return undefined;
+  return normalizePortalRecord(portal, domain);
 }

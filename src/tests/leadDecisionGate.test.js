@@ -145,3 +145,30 @@ test("leadDecisionGate: text on pricing with offers calls Cortex", () => {
   assert.equal(d.shouldMoveStage, true);
 });
 
+test("leadDecisionGate: text on NEW stage calls Cortex", () => {
+  const d = leadDecisionGate({
+    authorType: "client",
+    requestType: "TEXT",
+    leadStageKey: "NEW",
+    hasOffers: false,
+    sessionMode: "auto",
+  });
+
+  assert.equal(d.shouldReply, true);
+  assert.equal(d.shouldCallCortex, true);
+  assert.equal(d.shouldMoveStage, true);
+});
+
+test("leadDecisionGate: text without stage (null) calls Cortex", () => {
+  const d = leadDecisionGate({
+    authorType: "client",
+    requestType: "TEXT",
+    leadStageKey: null,
+    hasOffers: false,
+    sessionMode: "auto",
+  });
+
+  assert.equal(d.shouldReply, true);
+  assert.equal(d.shouldCallCortex, true);
+  assert.equal(d.shouldMoveStage, true);
+});

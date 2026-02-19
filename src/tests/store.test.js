@@ -154,3 +154,78 @@ test("store: saveStore logs error when write fails and cleanup error is ignored"
     restoreStoreFile(backup);
   }
 });
+
+test("store: loadStore normalizes snake_case token fields to camelCase", () => {
+  const backup = backupStoreFile();
+  try {
+    if (!fs.existsSync(STORE_DIR)) fs.mkdirSync(STORE_DIR, { recursive: true });
+    fs.writeFileSync(
+      STORE_PATH,
+      JSON.stringify(
+        {
+          "audit-store-normalize.bitrix24.ru": {
+            domain: "audit-store-normalize.bitrix24.ru",
+            baseUrl: "https://audit-store-normalize.bitrix24.ru/rest/",
+            access_token: "snake-access",
+            refresh_token: "snake-refresh",
+            member_id: "member-1",
+            application_token: "app-1",
+            user_id: 42,
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const store = loadStore();
+    const portal = store["audit-store-normalize.bitrix24.ru"];
+
+    assert.ok(portal);
+    assert.equal(portal.accessToken, "snake-access");
+    assert.equal(portal.refreshToken, "snake-refresh");
+    assert.equal(portal.memberId, "member-1");
+    assert.equal(portal.applicationToken, "app-1");
+    assert.equal(portal.userId, "42");
+    assert.equal("access_token" in portal, false);
+    assert.equal("refresh_token" in portal, false);
+    assert.equal("member_id" in portal, false);
+    assert.equal("application_token" in portal, false);
+    assert.equal("user_id" in portal, false);
+  } finally {
+    restoreStoreFile(backup);
+  }
+});
+
+test("store: upsertPortal persists canonical camelCase keys", () => {
+  const backup = backupStoreFile();
+  try {
+    if (!fs.existsSync(STORE_DIR)) fs.mkdirSync(STORE_DIR, { recursive: true });
+
+    upsertPortal("audit-store-canonical.bitrix24.ru", {
+      baseUrl: "https://audit-store-canonical.bitrix24.ru/rest/",
+      access_token: "snake-access",
+      refresh_token: "snake-refresh",
+      member_id: "member-2",
+      application_token: "app-2",
+      user_id: 77,
+    });
+
+    const raw = JSON.parse(fs.readFileSync(STORE_PATH, "utf8"));
+    const portal = raw["audit-store-canonical.bitrix24.ru"];
+
+    assert.equal(portal.accessToken, "snake-access");
+    assert.equal(portal.refreshToken, "snake-refresh");
+    assert.equal(portal.memberId, "member-2");
+    assert.equal(portal.applicationToken, "app-2");
+    assert.equal(portal.userId, "77");
+    assert.equal("access_token" in portal, false);
+    assert.equal("refresh_token" in portal, false);
+    assert.equal("member_id" in portal, false);
+    assert.equal("application_token" in portal, false);
+    assert.equal("user_id" in portal, false);
+  } finally {
+    restoreStoreFile(backup);
+  }
+});

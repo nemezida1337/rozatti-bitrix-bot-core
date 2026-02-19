@@ -79,11 +79,12 @@ export async function ensureBotRegistered(domain) {
 
   const cfg = getBotConfig();
   const eventsUrl = botEventsUrl();
+  const botType = process.env.BOT_TYPE || "O";
 
   // Регистрация бота в стиле оф. примеров: TYPE 'O' + OPENLINE 'Y' + полный набор событий
   const params = {
     CODE: cfg.CODE,
-    TYPE: "O", // бот для Open Lines
+    TYPE: botType, // для диагностики можно переключить через BOT_TYPE (например, B)
     OPENLINE: "Y", // критично для ОЛ-режима
     EVENT_MESSAGE_ADD: eventsUrl,
     EVENT_WELCOME_MESSAGE: eventsUrl,

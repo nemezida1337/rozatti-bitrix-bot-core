@@ -167,6 +167,8 @@ export function leadDecisionGate({
   if (requestType === "TEXT") {
     const stage = String(leadStageKey || "");
     const allowByStage =
+      stage === "NEW" ||
+      stage === "" ||
       stage === "CONTACT" ||
       stage === "ADDRESS" ||
       stage === "FINAL" ||

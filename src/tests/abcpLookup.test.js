@@ -56,6 +56,8 @@ test("abcp: searchManyOEMs groups offers by real OEM and normalizes delivery/qty
         data: [
           { isOriginal: false, price: 9999 },
           { isOriginal: true, number: "ALT111", price: 100, quantity: 0, deadlineReplace: "до 7 раб.дн." },
+          // Критичный формат ABCP: "до 9 р.дн." (раньше могло падать в fallback deliveryPeriod=269)
+          { isOriginal: true, number: "ALT222", price: 110, deadlineReplace: "до 9 р.дн.", deliveryPeriod: 269 },
           { isOriginal: true, number: "REQ123", price: 120, deliveryMin: 5, deliveryMax: 0 },
           { isOriginal: true, article: "REQ123", cost: 130, deadline: "до 18 дней", qty: true },
         ],
@@ -65,10 +67,12 @@ test("abcp: searchManyOEMs groups offers by real OEM and normalizes delivery/qty
   };
 
   const out = await mod.searchManyOEMs(["req123"]);
-  assert.deepEqual(Object.keys(out).sort(), ["ALT111", "REQ123"]);
+  assert.deepEqual(Object.keys(out).sort(), ["ALT111", "ALT222", "REQ123"]);
   assert.equal(out.ALT111.offers.length, 1);
   assert.equal(out.ALT111.offers[0].quantity, 1);
   assert.equal(out.ALT111.offers[0].minDays, 7);
+  assert.equal(out.ALT222.offers[0].minDays, 9);
+  assert.equal(out.ALT222.offers[0].maxDays, 9);
   assert.equal(out.REQ123.offers.length, 2);
   assert.equal(out.REQ123.offers[0].price, 120);
   assert.equal(out.REQ123.offers[1].maxDays, 18);
