@@ -33,6 +33,7 @@ jobs:
         env:
           DIALOG_CASES_FILE: src/tests/fixtures/dialog-cases/high_confidence_cases.ci.json
           DIALOG_EVAL_ENFORCE: "1"
+          DIALOG_EVAL_OUT_DIR: data/tmp/dialog-eval/ci
         run: npm run test:dialog-dataset
 
       - name: Test

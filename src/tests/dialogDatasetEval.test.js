@@ -92,6 +92,18 @@ async function readJson(filePath) {
   return JSON.parse(raw);
 }
 
+function resolveEvalOutDir(casesFile) {
+  const explicit = String(process.env.DIALOG_EVAL_OUT_DIR || "").trim();
+  if (explicit) return path.resolve(process.cwd(), explicit);
+
+  const rel = path.relative(ROOT, casesFile).replaceAll("\\", "/");
+  if (!rel.startsWith("..") && rel.startsWith("src/tests/fixtures/")) {
+    return path.join(ROOT, "data", "tmp", "dialog-eval");
+  }
+
+  return path.join(path.dirname(casesFile), "eval");
+}
+
 function evaluateDecisionForText(text) {
   const detectedOems = detectOemsFromText(text);
   const { gateInput, decision } = buildDecision({
@@ -249,7 +261,7 @@ function evaluateCase(row) {
 }
 
 async function writeReport({ casesFile, sampled, results, mismatches }) {
-  const outDir = path.join(path.dirname(casesFile), "eval");
+  const outDir = resolveEvalOutDir(casesFile);
   await fs.mkdir(outDir, { recursive: true });
 
   const byKind = {};
