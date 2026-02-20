@@ -9,13 +9,55 @@
 import { crmSettings } from "../../settings.crm.js";
 import { leadDecisionGate } from "../leadDecisionGate.js";
 
-const VIN_KEYWORD_REGEX = /(?:\bVIN\b|\bВИН\b)/i;
+const VIN_KEYWORD_REGEX = /(?:^|[^A-ZА-ЯЁ0-9_])(VIN|ВИН)(?=$|[^A-ZА-ЯЁ0-9_])/i;
 const VIN_ALLOWED_17_REGEX = /^[A-HJ-NPR-Z0-9]{17}$/i;
+const VIN_HAS_LETTER_REGEX = /[A-HJ-NPR-Z]/i;
+const VIN_CONTIGUOUS_17_REGEX = /[A-HJ-NPR-Z0-9]{17}/gi;
+const VIN_TOKEN_WITH_SEPARATORS_REGEX = /[A-HJ-NPR-Z0-9-]{17,30}/gi;
+const VIN_AFTER_KEYWORD_REGEX =
+  /(?:^|[^A-ZА-ЯЁ0-9_])(?:VIN|ВИН)\s*[:#]?\s*([A-HJ-NPR-Z0-9][A-HJ-NPR-Z0-9\s-]{14,60})/giu;
 
 function compactAlnum(text) {
   return String(text || "")
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, "");
+}
+
+function isValidVinCandidate(value) {
+  const candidate = compactAlnum(value);
+  return (
+    candidate.length === 17 &&
+    VIN_ALLOWED_17_REGEX.test(candidate) &&
+    VIN_HAS_LETTER_REGEX.test(candidate)
+  );
+}
+
+function hasValidContiguousVin(text) {
+  const matches = String(text || "")
+    .toUpperCase()
+    .match(VIN_CONTIGUOUS_17_REGEX);
+  if (!matches || matches.length === 0) return false;
+  return matches.some((candidate) => isValidVinCandidate(candidate));
+}
+
+function hasValidVinTokenWithSeparators(text) {
+  const tokens = String(text || "")
+    .toUpperCase()
+    .match(VIN_TOKEN_WITH_SEPARATORS_REGEX);
+  if (!tokens || tokens.length === 0) return false;
+
+  return tokens.some((token) => isValidVinCandidate(token));
+}
+
+function hasValidVinAfterKeyword(text) {
+  const upper = String(text || "").toUpperCase();
+  const matches = upper.matchAll(VIN_AFTER_KEYWORD_REGEX);
+  for (const match of matches) {
+    const candidate = compactAlnum(match?.[1] || "");
+    if (candidate.length < 17) continue;
+    if (isValidVinCandidate(candidate.slice(0, 17))) return true;
+  }
+  return false;
 }
 
 function buildStatusToStageKeyMap() {
@@ -39,12 +81,19 @@ function isVinLike(text) {
   const t = String(text || "").trim();
   if (!t) return false;
 
-  // Если пользователь явно пишет VIN/ВИН — считаем VIN-запросом
-  if (VIN_KEYWORD_REGEX.test(t)) return true;
+  const upper = t.toUpperCase();
 
-  // Если в тексте есть 17-символьный VIN (после очистки)
-  const c = compactAlnum(t);
-  return c.length === 17 && VIN_ALLOWED_17_REGEX.test(c);
+  // Если в тексте есть валидный 17-символьный VIN подряд.
+  if (hasValidContiguousVin(upper)) return true;
+
+  if (VIN_KEYWORD_REGEX.test(upper)) {
+    if (hasValidVinAfterKeyword(upper)) return true;
+    // Поддержка VIN с дефисами только в контексте явного VIN/ВИН,
+    // чтобы не ловить GUID/идентификаторы из реквизитов как VIN.
+    if (hasValidVinTokenWithSeparators(upper)) return true;
+  }
+
+  return false;
 }
 
 function inferAuthorType(ctx) {
@@ -79,12 +128,14 @@ export function buildDecision(ctx) {
     (Array.isArray(ctx?.session?.abcp?.items) && ctx.session.abcp.items.length > 0);
 
   let requestType = "EMPTY";
-  if (!hasText) {
+  if (!hasText && hasImage) {
+    requestType = "COMPLEX";
+  } else if (!hasText) {
     requestType = "EMPTY";
-  } else if (detectedOems.length > 0) {
-    requestType = "OEM";
   } else if (isVinLike(text)) {
     requestType = "VIN";
+  } else if (detectedOems.length > 0) {
+    requestType = "OEM";
   } else if (hasImage) {
     requestType = "COMPLEX";
   } else {
@@ -94,6 +145,7 @@ export function buildDecision(ctx) {
   const gateInput = {
     authorType,
     requestType,
+    rawText: text,
     hasImage,
     detectedOems,
     leadStatusId,
