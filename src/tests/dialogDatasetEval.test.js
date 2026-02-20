@@ -18,15 +18,73 @@ function toPositiveInt(value, fallback) {
   return Math.trunc(n);
 }
 
+async function pathExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function resolveCasesFile() {
   const direct = String(process.env.DIALOG_CASES_FILE || "").trim();
-  if (direct) return path.resolve(process.cwd(), direct);
+  if (direct) {
+    const resolved = path.resolve(process.cwd(), direct);
+    if (!(await pathExists(resolved))) {
+      throw new Error(`DIALOG_CASES_FILE не найден: ${resolved}`);
+    }
+    return resolved;
+  }
 
   const latestPointer = path.join(ROOT, "data", "tmp", "dialog-tests", "LATEST.txt");
+  if (!(await pathExists(latestPointer))) {
+    throw new Error("data/tmp/dialog-tests/LATEST.txt не найден");
+  }
+
   const latestDir = String(await fs.readFile(latestPointer, "utf8")).trim();
   if (!latestDir) throw new Error("data/tmp/dialog-tests/LATEST.txt пустой");
 
-  return path.join(path.resolve(latestDir), "high_confidence_cases.json");
+  const directFromPointer = path.join(path.resolve(latestDir), "high_confidence_cases.json");
+  if (await pathExists(directFromPointer)) return directFromPointer;
+
+  // В LATEST.txt может быть absolute path с другой ОС/машины.
+  // Пытаемся восстановить путь по имени директории внутри текущего workspace.
+  const pointerDirName = path.basename(latestDir.replace(/[/\\]+/g, path.sep));
+  if (pointerDirName) {
+    const byDirName = path.join(
+      ROOT,
+      "data",
+      "tmp",
+      "dialog-tests",
+      pointerDirName,
+      "high_confidence_cases.json",
+    );
+    if (await pathExists(byDirName)) return byDirName;
+  }
+
+  // Fallback: выбрать самый свежий валидный датасет в workspace.
+  const baseDir = path.join(ROOT, "data", "tmp", "dialog-tests");
+  let entries = [];
+  try {
+    entries = await fs.readdir(baseDir, { withFileTypes: true });
+  } catch {
+    throw new Error(`Нет валидного датасета: pointer=${latestDir}`);
+  }
+
+  const dirs = entries
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort((a, b) => String(b).localeCompare(String(a)));
+
+  for (const dirName of dirs) {
+    const candidate = path.join(baseDir, dirName, "high_confidence_cases.json");
+    if (await pathExists(candidate)) return candidate;
+  }
+
+  throw new Error(
+    `high_confidence_cases.json не найден (pointer=${latestDir}, checked=${dirs.length} dirs)`,
+  );
 }
 
 async function readJson(filePath) {
