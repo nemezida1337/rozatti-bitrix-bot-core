@@ -125,6 +125,20 @@ export function leadDecisionGate({
     };
   }
 
+  // 2.1) VIN всегда уводим в ручной сценарий (даже если в тексте есть OEM)
+  if (requestType === "VIN") {
+    return {
+      mode: "manual",
+      waitReason: "VIN_WAIT_OEM",
+      shouldReply: !manualAckSent,
+      replyType: !manualAckSent ? "MANUAL_ACK" : null,
+      shouldCallCortex: false,
+      shouldMoveStage: true,
+      shouldWriteOemToLead: false,
+      oemCandidates: oemInMessage ? detectedOems : [],
+    };
+  }
+
   // 2.1) VIN/COMPLEX/PHOTO → ставим ручную стадию + 1 ACK, дальше ждём OEM в поле
   if (isComplexBySignal && !oemInMessage) {
     return {
