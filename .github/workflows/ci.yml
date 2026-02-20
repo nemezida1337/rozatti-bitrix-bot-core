@@ -29,8 +29,20 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Dialog Dataset Eval (deterministic)
+        env:
+          DIALOG_CASES_FILE: src/tests/fixtures/dialog-cases/high_confidence_cases.ci.json
+          DIALOG_EVAL_ENFORCE: "1"
+        run: npm run test:dialog-dataset
+
       - name: Test
         run: npm test
+
+      - name: E2E Scenario Smoke
+        env:
+          SCENARIO_DUMPS_ENFORCE: "1"
+          SCENARIO_DUMPS_OUT_DIR: data/tmp/scenario-dumps/ci
+        run: npm run test:e2e-scenarios
 
       - name: Node Coverage
         run: npm run test:coverage

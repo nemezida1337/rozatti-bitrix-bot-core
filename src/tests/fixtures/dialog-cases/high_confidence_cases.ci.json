@@ -1,0 +1,48 @@
+[
+  {
+    "case_id": "ci-oem-flow-001",
+    "assertion_kind": "OEM_FLOW",
+    "client_text": "Нужен номер 06A906032N, подскажите цену."
+  },
+  {
+    "case_id": "ci-vin-handover-001",
+    "assertion_kind": "VIN_HANDOVER",
+    "client_text": "VIN: WBANV93588CZ12345"
+  },
+  {
+    "case_id": "ci-smalltalk-howto-001",
+    "assertion_kind": "SMALLTALK_HOWTO",
+    "client_text": "Как оформить заказ и оплатить?"
+  },
+  {
+    "case_id": "ci-smalltalk-offtopic-001",
+    "assertion_kind": "SMALLTALK_OFFTOPIC",
+    "client_text": "Какая сегодня погода?"
+  },
+  {
+    "case_id": "ci-no-stock-reply-001",
+    "assertion_kind": "NO_STOCK_REPLY",
+    "client_text": "Проверьте пожалуйста 61217726563"
+  },
+  {
+    "case_id": "ci-status-tracking-001",
+    "assertion_kind": "STATUS_TRACKING",
+    "client_text": "Подскажите, где заказ №3592?"
+  },
+  {
+    "case_id": "ci-service-ack-001",
+    "assertion_kind": "SERVICE_ACK",
+    "client_text": "Есть в наличии 06A906032N?"
+  },
+  {
+    "case_id": "ci-vin-service-ack-001",
+    "assertion_kind": "VIN_SERVICE_ACK",
+    "client_text": "ВИН WBANV93588CZ12345"
+  },
+  {
+    "case_id": "ci-repeat-followup-001",
+    "assertion_kind": "REPEAT_FOLLOWUP",
+    "client_text": "Ну что по моему запросу?",
+    "history_prev_client_text": "Нужен 06A906032N"
+  }
+]

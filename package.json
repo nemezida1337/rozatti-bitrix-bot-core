@@ -12,7 +12,11 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test",
     "test:coverage": "node --test --experimental-test-coverage",
-    "dump:scenarios": "node src/scripts/runScenarioDumps.js"
+    "dump:scenarios": "node src/scripts/runScenarioDumps.js",
+    "dump:dialogs": "node src/scripts/dumpBitrixDialogs.js",
+    "build:dialog-cases": "node src/scripts/buildDialogCases.js",
+    "test:dialog-dataset": "node --test src/tests/dialogDatasetEval.test.js",
+    "test:e2e-scenarios": "node src/scripts/runScenarioDumps.js"
   },
   "dependencies": {
     "axios": "^1.13.2",

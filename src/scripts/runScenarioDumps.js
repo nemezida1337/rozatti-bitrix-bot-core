@@ -12,8 +12,13 @@ import axios from "axios";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, "..", "..");
-const NOW = new Date().toISOString().replace(/[:.]/g, "-");
-const OUT_DIR = path.join(ROOT, "data", "tmp", "scenario-dumps", NOW);
+function resolveOutDir() {
+  const explicit = String(process.env.SCENARIO_DUMPS_OUT_DIR || "").trim();
+  if (explicit) return path.resolve(process.cwd(), explicit);
+  const now = new Date().toISOString().replace(/[:.]/g, "-");
+  return path.join(ROOT, "data", "tmp", "scenario-dumps", now);
+}
+const OUT_DIR = resolveOutDir();
 const OUT_CORTEX_DIR = path.join(OUT_DIR, "cortex");
 
 const originalFetch = global.fetch;
@@ -346,16 +351,18 @@ async function runFlowManagerTriggerSuccess(runManagerOemTriggerFlow, crmSetting
   };
   stubAbcpPost = async () => ({ data: { status: 1 } });
 
-  const fetchStub = installFetchJsonStub([
-    {
-      result: {
-        action: "reply",
-        stage: "CONTACT",
-        reply: "Готово, продолжаем",
-        oems: ["OEM-TRIGGER-999"],
+  const fetchStub = installFetchRouterStub({
+    cortexBodies: [
+      {
+        result: {
+          action: "reply",
+          stage: "CONTACT",
+          reply: "Готово, продолжаем",
+          oems: ["OEM-TRIGGER-999"],
+        },
       },
-    },
-  ]);
+    ],
+  });
 
   const oemField = crmSettings.leadFields.OEM;
   const { api, calls } = makeApiSpy({
@@ -371,14 +378,15 @@ async function runFlowManagerTriggerSuccess(runManagerOemTriggerFlow, crmSetting
     leadId: 704,
     mode: "manual",
     lastSeenLeadOem: null,
-    oem_candidates: [],
+    // pending manual-flow candidates allow first-pass trigger after restart.
+    oem_candidates: ["OEM-TRIGGER-999"],
     state: { stage: "NEW", offers: [] },
   };
 
   const handled = await runManagerOemTriggerFlow({
     api,
     portalDomain: "dump-manager-trigger.bitrix24.ru",
-    portalCfg: {},
+    portalCfg: { baseUrl: "http://bitrix.local/rest", accessToken: "token" },
     dialogId: "dump-manager-001",
     session,
   });
@@ -780,6 +788,7 @@ async function main() {
     scenarios_total: all.length,
     scenarios_ok: all.filter((x) => x.ok).length,
     scenarios_failed: all.filter((x) => !x.ok).length,
+    failed_scenario_ids: all.filter((x) => !x.ok).map((x) => x.id),
     groups: {
       small_talk: smallTalkResults.length,
       flow: flowResults.length,
@@ -797,6 +806,13 @@ async function main() {
     scenarios: all.map((x) => ({ id: x.id, group: x.group, title: x.title, ok: x.ok })),
   };
   await writeJson(path.join(OUT_DIR, "summary_compact.json"), compact);
+
+  const enforceStrict = String(process.env.SCENARIO_DUMPS_ENFORCE || "").trim() === "1";
+  if (enforceStrict && summary.scenarios_failed > 0) {
+    throw new Error(
+      `Scenario dump failures: ${summary.failed_scenario_ids.join(", ") || "unknown"}`,
+    );
+  }
 
   restoreFetch();
   restoreAxios();
