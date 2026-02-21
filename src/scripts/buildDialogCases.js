@@ -264,7 +264,7 @@ function isMediaOnlyClientText(text) {
   return !signalText;
 }
 
-function isVinLikeText(text, clientTurn = null) {
+function isVinLikeText(text) {
   const t = String(text || "").trim();
   if (!t) return false;
   const upper = t.toUpperCase();

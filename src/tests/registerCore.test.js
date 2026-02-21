@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { upsertPortal } from "../core/store.js";
+import { upsertPortal } from "../core/store.legacy.js";
 import {
   ensureBotRegistered,
   handleOnImBotMessageAdd,
@@ -50,30 +50,84 @@ function makeFetchStub({ botList = [], openlinesConfigList = [], onCall } = {}) 
       };
     }
     if (method === "imbot.bot.list") {
-      return { ok: true, status: 200, async json() { return { result: botList }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: botList };
+        },
+      };
     }
     if (method === "imbot.register") {
-      return { ok: true, status: 200, async json() { return { result: 9001 }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: 9001 };
+        },
+      };
     }
     if (method === "imbot.command.register") {
-      return { ok: true, status: 200, async json() { return { result: true }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: true };
+        },
+      };
     }
     if (method === "imopenlines.config.list.get") {
-      return { ok: true, status: 200, async json() { return { result: openlinesConfigList }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: openlinesConfigList };
+        },
+      };
     }
     if (method === "imopenlines.config.update") {
-      return { ok: true, status: 200, async json() { return { result: true }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: true };
+        },
+      };
     }
     if (method === "imbot.message.add") {
-      return { ok: true, status: 200, async json() { return { result: true }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: true };
+        },
+      };
     }
     if (method === "imopenlines.bot.session.message.send") {
-      return { ok: true, status: 200, async json() { return { result: true }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: true };
+        },
+      };
     }
     if (method === "crm.lead.add") {
-      return { ok: true, status: 200, async json() { return { result: 777 }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: 777 };
+        },
+      };
     }
-    return { ok: true, status: 200, async json() { return { result: true }; } };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { result: true };
+      },
+    };
   };
 }
 
@@ -126,7 +180,7 @@ test("register.core: ensureBotRegistered detects existing bot in object-shaped i
   const called = [];
   globalThis.fetch = makeFetchStub({
     botList: {
-      "42": { CODE: "ram_parts_bot" },
+      42: { CODE: "ram_parts_bot" },
     },
     onCall: ({ method }) => called.push(method),
   });
@@ -183,17 +237,15 @@ test("register.core: ensureBotRegistered registers bot and commands with secret 
     botList: [],
     onCall: ({ method, params }) => {
       if (method === "imbot.register") registerPayloads.push(Object.fromEntries(params.entries()));
-      if (method === "imbot.command.register") commandPayloads.push(Object.fromEntries(params.entries()));
+      if (method === "imbot.command.register")
+        commandPayloads.push(Object.fromEntries(params.entries()));
     },
   });
 
   await ensureBotRegistered(domain);
 
   assert.equal(registerPayloads.length, 1);
-  assert.match(
-    registerPayloads[0].EVENT_MESSAGE_ADD || "",
-    /\/bitrix\/events\?secret=evt-secret$/,
-  );
+  assert.match(registerPayloads[0].EVENT_MESSAGE_ADD || "", /\/bitrix\/events\?secret=evt-secret$/);
   assert.equal(commandPayloads.length, 3);
 });
 
@@ -234,7 +286,7 @@ test("register.core: ensureBotRegistered rethrows when imbot.register fails", as
   process.env.BASE_URL = "https://my-bot.example";
   seedPortal(domain);
 
-  globalThis.fetch = async (url, opts = {}) => {
+  globalThis.fetch = async (url, _opts = {}) => {
     const method = String(url).match(/\/rest\/(.+)\.json/)?.[1] || "unknown";
     if (method === "profile") {
       return {
@@ -246,7 +298,13 @@ test("register.core: ensureBotRegistered rethrows when imbot.register fails", as
       };
     }
     if (method === "imbot.bot.list") {
-      return { ok: true, status: 200, async json() { return { result: [] }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: [] };
+        },
+      };
     }
     if (method === "imbot.register") {
       return {
@@ -257,7 +315,13 @@ test("register.core: ensureBotRegistered rethrows when imbot.register fails", as
         },
       };
     }
-    return { ok: true, status: 200, async json() { return { result: true }; } };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { result: true };
+      },
+    };
   };
 
   await assert.rejects(() => ensureBotRegistered(domain), /register fail|REGISTER_FAILED/);
@@ -298,9 +362,18 @@ test("register.core: handleOnImCommandAdd covers help/lead/vin/unknown", async (
   });
 
   assert.equal(leadTitles.includes("Новый лид"), true);
-  assert.equal(sentMessages.some((m) => /Команды:/.test(String(m))), true);
-  assert.equal(sentMessages.some((m) => /VIN 'WBA123' принят/.test(String(m))), true);
-  assert.equal(sentMessages.some((m) => /Неизвестная команда/.test(String(m))), true);
+  assert.equal(
+    sentMessages.some((m) => /Команды:/.test(String(m))),
+    true,
+  );
+  assert.equal(
+    sentMessages.some((m) => /VIN 'WBA123' принят/.test(String(m))),
+    true,
+  );
+  assert.equal(
+    sentMessages.some((m) => /Неизвестная команда/.test(String(m))),
+    true,
+  );
 });
 
 test("register.core: handleOnImBotMessageAdd covers help/vin/lead/default branches", async () => {
@@ -314,7 +387,8 @@ test("register.core: handleOnImBotMessageAdd covers help/vin/lead/default branch
     onCall: ({ method, params }) => {
       if (method === "imbot.message.add") sentMessages.push(params.get("MESSAGE"));
       if (method === "crm.lead.add") leadTitles.push(params.get("fields[TITLE]"));
-      if (method === "imopenlines.bot.session.message.send") welcomeCalls.push(params.get("MESSAGE"));
+      if (method === "imopenlines.bot.session.message.send")
+        welcomeCalls.push(params.get("MESSAGE"));
     },
   });
 
@@ -341,10 +415,19 @@ test("register.core: handleOnImBotMessageAdd covers help/vin/lead/default branch
     body: { data: { PARAMS: { DIALOG_ID: "chat505", MESSAGE: "обычный текст" } } },
   });
 
-  assert.equal(sentMessages.some((m) => /Команды:/.test(String(m))), true);
-  assert.equal(sentMessages.some((m) => /VIN-поиск принят/.test(String(m))), true);
+  assert.equal(
+    sentMessages.some((m) => /Команды:/.test(String(m))),
+    true,
+  );
+  assert.equal(
+    sentMessages.some((m) => /VIN-поиск принят/.test(String(m))),
+    true,
+  );
   assert.equal(leadTitles.includes("Тест лид"), true);
-  assert.equal(sentMessages.some((m) => /Принято. Напишите VIN/.test(String(m))), true);
+  assert.equal(
+    sentMessages.some((m) => /Принято. Напишите VIN/.test(String(m))),
+    true,
+  );
   assert.equal(welcomeCalls.includes("Приняли VIN. Ожидайте."), true);
 });
 

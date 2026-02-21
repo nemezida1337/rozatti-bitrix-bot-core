@@ -361,7 +361,7 @@ test("abcpOrder: creates new ABCP client when not found by phone", { concurrency
 
   let cpUsersCalls = 0;
 
-  postImpl = async (url, body) => {
+  postImpl = async (url, _body) => {
     if (url === "/basket/add") {
       const err = new Error("Orders v1 disabled");
       err.response = {

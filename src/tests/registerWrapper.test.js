@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import * as core from "../modules/bot/register.core.js";
 import { processIncomingBitrixMessage } from "../modules/bot/handler/index.js";
+import * as core from "../modules/bot/register.core.js";
 import registerDefault, {
   ensureBotRegistered,
   handleOnImBotMessageAdd,

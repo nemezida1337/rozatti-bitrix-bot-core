@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { upsertPortal } from "../core/store.js";
-import { crmSettings } from "../modules/settings.crm.js";
+import { upsertPortal } from "../core/store.legacy.js";
 import { buildContext } from "../modules/bot/handler/context.js";
-import { saveSession } from "../modules/bot/sessionStore.js";
+import { saveSession } from "../modules/bot/sessionStore.legacy.js";
+import { crmSettings } from "../modules/settings.crm.js";
 
 const originalFetch = global.fetch;
 process.env.TOKENS_FILE = "./data/portals.contextBuilder.test.json";
@@ -86,7 +86,12 @@ test("context builder: reads lead status and OEM from CRM when session has leadI
         },
       };
     }
-    return { ok: true, async json() { return { result: {} }; } };
+    return {
+      ok: true,
+      async json() {
+        return { result: {} };
+      },
+    };
   };
 
   const ctx = await buildContext({
@@ -154,7 +159,12 @@ test("context builder: OEM field with only spaces is treated as empty", async ()
   global.fetch = async (url) => {
     const u = String(url);
     if (u.includes("/profile.json")) {
-      return { ok: true, async json() { return { result: {} }; } };
+      return {
+        ok: true,
+        async json() {
+          return { result: {} };
+        },
+      };
     }
     if (u.includes("/crm.lead.get.json")) {
       return {
@@ -170,7 +180,12 @@ test("context builder: OEM field with only spaces is treated as empty", async ()
         },
       };
     }
-    return { ok: true, async json() { return { result: {} }; } };
+    return {
+      ok: true,
+      async json() {
+        return { result: {} };
+      },
+    };
   };
 
   const ctx = await buildContext({
@@ -243,7 +258,12 @@ test("context builder: does not call CRM lead API when accessToken is missing", 
 
   global.fetch = async () => {
     fetchCalls += 1;
-    return { ok: true, async json() { return { result: {} }; } };
+    return {
+      ok: true,
+      async json() {
+        return { result: {} };
+      },
+    };
   };
 
   const ctx = await buildContext({
@@ -277,7 +297,12 @@ test("context builder: keeps OEM defaults when lead does not contain OEM field",
   global.fetch = async (url) => {
     const u = String(url);
     if (u.includes("/profile.json")) {
-      return { ok: true, async json() { return { result: {} }; } };
+      return {
+        ok: true,
+        async json() {
+          return { result: {} };
+        },
+      };
     }
     if (u.includes("/crm.lead.get.json")) {
       return {
@@ -287,7 +312,12 @@ test("context builder: keeps OEM defaults when lead does not contain OEM field",
         },
       };
     }
-    return { ok: true, async json() { return { result: {} }; } };
+    return {
+      ok: true,
+      async json() {
+        return { result: {} };
+      },
+    };
   };
 
   const ctx = await buildContext({
