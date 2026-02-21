@@ -5,10 +5,11 @@ import test from "node:test";
 
 import { logger } from "../core/logger.js";
 import {
-  cleanupSessions,
-  getSession,
-  saveSession,
+  cleanupSessionsAsync,
+  getSessionAsync,
+  saveSessionAsync,
 } from "../modules/bot/sessionStore.js";
+import { cleanupSessions, getSession, saveSession } from "../modules/bot/sessionStore.legacy.js";
 
 const SESSIONS_DIR = path.resolve("./data/sessions");
 const TTL_MS = 24 * 60 * 60 * 1000;
@@ -59,6 +60,34 @@ test("sessionStore: save/get normalizes structure", () => {
   removeIfExists(file);
 });
 
+test("sessionStore: async save/get normalizes structure", async () => {
+  const portal = "audit-session-async-normalize.bitrix24.ru";
+  const dialogId = "chat-100-async";
+  const file = sessionFile(portal, dialogId);
+  removeIfExists(file);
+
+  const input = {
+    mode: "invalid-mode",
+    manualAckSent: 1,
+    oem_candidates: ["  OEM-ASYNC-1 ", "", "OEM-ASYNC-2"],
+    lastSeenLeadOem: "  ",
+    state: { stage: "NEW" },
+  };
+
+  await saveSessionAsync(portal, dialogId, input);
+  const s = await getSessionAsync(portal, dialogId);
+
+  assert.ok(s);
+  assert.equal(s.mode, "auto");
+  assert.equal(s.manualAckSent, true);
+  assert.deepEqual(s.oem_candidates, ["OEM-ASYNC-1", "OEM-ASYNC-2"]);
+  assert.equal(s.lastSeenLeadOem, null);
+  assert.equal(typeof s.updatedAt, "number");
+  assert.equal(typeof s.createdAt, "number");
+
+  removeIfExists(file);
+});
+
 test("sessionStore: getSession drops stale session by TTL", () => {
   const portal = "audit-session-ttl.bitrix24.ru";
   const dialogId = "chat-101";
@@ -91,6 +120,18 @@ test("sessionStore: cleanupSessions removes invalid json files", () => {
   assert.equal(fs.existsSync(file), true);
 
   cleanupSessions();
+
+  assert.equal(fs.existsSync(file), false);
+});
+
+test("sessionStore: cleanupSessionsAsync removes invalid json files", async () => {
+  const file = path.join(SESSIONS_DIR, "audit_cleanup_async_bad_json.json");
+  removeIfExists(file);
+  fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+  fs.writeFileSync(file, "{broken-json", "utf8");
+  assert.equal(fs.existsSync(file), true);
+
+  await cleanupSessionsAsync();
 
   assert.equal(fs.existsSync(file), false);
 });

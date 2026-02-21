@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
 import { logger } from "../core/logger.js";
-import { getPortal, loadStore, saveStore, upsertPortal } from "../core/store.js";
+import { loadStoreAsync, saveStoreAsync } from "../core/store.js";
+import { getPortal, loadStore, saveStore, upsertPortal } from "../core/store.legacy.js";
 
 process.env.TOKENS_FILE = "./data/portals.store.test.json";
 
@@ -24,6 +26,10 @@ function restoreStoreFile(backup) {
   } else if (fs.existsSync(STORE_PATH)) {
     fs.rmSync(STORE_PATH, { force: true });
   }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 test("store: upsertPortal recovers from corrupted portals.json", () => {
@@ -226,6 +232,144 @@ test("store: upsertPortal persists canonical camelCase keys", () => {
     assert.equal("application_token" in portal, false);
     assert.equal("user_id" in portal, false);
   } finally {
+    restoreStoreFile(backup);
+  }
+});
+
+test("store: loadStoreAsync returns cloned snapshot from cache", async () => {
+  const backup = backupStoreFile();
+  const prevTtl = process.env.STORE_CACHE_TTL_MS;
+  try {
+    process.env.STORE_CACHE_TTL_MS = "3000";
+    await saveStoreAsync({
+      "audit-store-async-cache.bitrix24.ru": {
+        domain: "audit-store-async-cache.bitrix24.ru",
+        accessToken: "token-original",
+      },
+    });
+
+    const snapshot1 = await loadStoreAsync();
+    snapshot1["audit-store-async-cache.bitrix24.ru"].accessToken = "token-mutated";
+
+    const snapshot2 = await loadStoreAsync();
+    assert.equal(snapshot2["audit-store-async-cache.bitrix24.ru"].accessToken, "token-original");
+  } finally {
+    if (prevTtl == null) delete process.env.STORE_CACHE_TTL_MS;
+    else process.env.STORE_CACHE_TTL_MS = prevTtl;
+    restoreStoreFile(backup);
+  }
+});
+
+test("store: loadStoreAsync respects TTL and reloads from disk after expiration", async () => {
+  const backup = backupStoreFile();
+  const prevTtl = process.env.STORE_CACHE_TTL_MS;
+  try {
+    process.env.STORE_CACHE_TTL_MS = "20";
+    await saveStoreAsync({
+      "audit-store-async-ttl.bitrix24.ru": {
+        domain: "audit-store-async-ttl.bitrix24.ru",
+        accessToken: "token-v1",
+      },
+    });
+
+    const first = await loadStoreAsync();
+    assert.equal(first["audit-store-async-ttl.bitrix24.ru"].accessToken, "token-v1");
+
+    fs.writeFileSync(
+      STORE_PATH,
+      JSON.stringify(
+        {
+          "audit-store-async-ttl.bitrix24.ru": {
+            domain: "audit-store-async-ttl.bitrix24.ru",
+            accessToken: "token-v2",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const cached = await loadStoreAsync();
+    assert.equal(cached["audit-store-async-ttl.bitrix24.ru"].accessToken, "token-v1");
+
+    await sleep(35);
+
+    const refreshed = await loadStoreAsync();
+    assert.equal(refreshed["audit-store-async-ttl.bitrix24.ru"].accessToken, "token-v2");
+  } finally {
+    if (prevTtl == null) delete process.env.STORE_CACHE_TTL_MS;
+    else process.env.STORE_CACHE_TTL_MS = prevTtl;
+    restoreStoreFile(backup);
+  }
+});
+
+test("store: loadStoreAsync uses single-flight for concurrent reads", async () => {
+  const backup = backupStoreFile();
+  const prevTtl = process.env.STORE_CACHE_TTL_MS;
+  const originalReadFile = fsp.readFile;
+  let readCalls = 0;
+  try {
+    process.env.STORE_CACHE_TTL_MS = "1";
+    if (!fs.existsSync(STORE_DIR)) fs.mkdirSync(STORE_DIR, { recursive: true });
+    fs.writeFileSync(
+      STORE_PATH,
+      JSON.stringify(
+        {
+          "audit-store-async-flight.bitrix24.ru": {
+            domain: "audit-store-async-flight.bitrix24.ru",
+            accessToken: "token-flight",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await sleep(5);
+
+    fsp.readFile = async (...args) => {
+      readCalls += 1;
+      await sleep(30);
+      return originalReadFile(...args);
+    };
+
+    const [first, second] = await Promise.all([loadStoreAsync(), loadStoreAsync()]);
+    assert.equal(readCalls, 1);
+    assert.equal(first["audit-store-async-flight.bitrix24.ru"].accessToken, "token-flight");
+    assert.equal(second["audit-store-async-flight.bitrix24.ru"].accessToken, "token-flight");
+  } finally {
+    fsp.readFile = originalReadFile;
+    if (prevTtl == null) delete process.env.STORE_CACHE_TTL_MS;
+    else process.env.STORE_CACHE_TTL_MS = prevTtl;
+    restoreStoreFile(backup);
+  }
+});
+
+test("store: saveStoreAsync updates cache for immediate read", async () => {
+  const backup = backupStoreFile();
+  const prevTtl = process.env.STORE_CACHE_TTL_MS;
+  const originalReadFile = fsp.readFile;
+  try {
+    process.env.STORE_CACHE_TTL_MS = "3000";
+    await saveStoreAsync({
+      "audit-store-async-save.bitrix24.ru": {
+        domain: "audit-store-async-save.bitrix24.ru",
+        accessToken: "token-save",
+      },
+    });
+
+    fsp.readFile = async () => {
+      throw new Error("readFile must not be called");
+    };
+
+    const store = await loadStoreAsync();
+    assert.equal(store["audit-store-async-save.bitrix24.ru"].accessToken, "token-save");
+  } finally {
+    fsp.readFile = originalReadFile;
+    if (prevTtl == null) delete process.env.STORE_CACHE_TTL_MS;
+    else process.env.STORE_CACHE_TTL_MS = prevTtl;
     restoreStoreFile(backup);
   }
 });

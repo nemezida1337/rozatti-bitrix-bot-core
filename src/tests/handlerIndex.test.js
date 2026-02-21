@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { logger } from "../core/logger.js";
-import { upsertPortal } from "../core/store.js";
+import { upsertPortal } from "../core/store.legacy.js";
 import { processIncomingBitrixMessage } from "../modules/bot/handler/index.js";
-import { getSession, saveSession } from "../modules/bot/sessionStore.js";
+import { getSession, saveSession } from "../modules/bot/sessionStore.legacy.js";
 import { crmSettings } from "../modules/settings.crm.js";
 
 process.env.TOKENS_FILE = "./data/portals.handlerIndex.test.json";
@@ -444,10 +444,7 @@ test("handler index: marketplace service notice replies and moves lead to IN_WOR
 
   const sendCall = apiCalls.find((x) => x.method === "imbot.message.add");
   assert.ok(sendCall, "imbot.message.add must be called");
-  assert.equal(
-    sendCall.params.MESSAGE,
-    "Спасибо за уведомление, проверим обновление прайса.",
-  );
+  assert.equal(sendCall.params.MESSAGE, "Спасибо за уведомление, проверим обновление прайса.");
 
   const leadUpdateCall = apiCalls.find(
     (x) => x.method === "crm.lead.update" && x.params.id === leadId,
@@ -552,7 +549,10 @@ test("handler index: repeat followup uses history-aware reply", async () => {
   assert.ok(session);
   assert.equal(session.lastProcessedMessageId, 101);
   assert.equal(Array.isArray(session.history), true);
-  assert.equal(session.history.some((x) => x.kind === "repeat_followup"), true);
+  assert.equal(
+    session.history.some((x) => x.kind === "repeat_followup"),
+    true,
+  );
 });
 
 test("handler index: pricing objection is routed through Cortex in cortex classifier mode", async () => {

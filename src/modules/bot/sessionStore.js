@@ -12,6 +12,7 @@
 // - атомарная запись: write tmp -> rename
 
 import fs from "fs";
+import fsp from "node:fs/promises";
 import path from "path";
 
 import { logger } from "../../core/logger.js";
@@ -20,6 +21,14 @@ const CTX = "sessionStore";
 
 const SESSIONS_PATH = path.resolve("./data/sessions");
 const TTL_MS = 24 * 60 * 60 * 1000; // 24 часа
+const CACHE_TTL_MS = (() => {
+  const n = Number(process.env.SESSION_CACHE_TTL_MS || 3000);
+  if (!Number.isFinite(n) || n <= 0) return 3000;
+  return Math.trunc(n);
+})();
+
+/** @type {Map<string, { session: any, loadedAt: number }>} */
+const SESSION_CACHE = new Map();
 
 ensureDir(SESSIONS_PATH);
 
@@ -92,7 +101,9 @@ function normalizeSession(session) {
     const normalizedHistory = [];
     for (const item of merged.history) {
       if (!item || typeof item !== "object") continue;
-      const role = String(item.role || "").trim().toLowerCase();
+      const role = String(item.role || "")
+        .trim()
+        .toLowerCase();
       if (!role) continue;
       const text = String(item.text || "").trim();
       const textNormalized = String(item.text_normalized || "").trim();
@@ -142,126 +153,191 @@ function buildSessionPath(portal, dialogId) {
   return path.join(SESSIONS_PATH, buildSessionFilename(portal, dialogId));
 }
 
+function buildSessionCacheKey(portal, dialogId) {
+  const safePortal = String(portal || "unknown")
+    .replace(/[^a-zA-Z0-9_.-]+/g, "_")
+    .toLowerCase();
+  const safeDialog = String(dialogId || "unknown")
+    .replace(/[^a-zA-Z0-9_.-]+/g, "_")
+    .toLowerCase();
+  return `${safePortal}__${safeDialog}`;
+}
+
+function cloneSession(session) {
+  if (!session || typeof session !== "object") return session;
+  if (typeof globalThis.structuredClone === "function") {
+    return globalThis.structuredClone(session);
+  }
+  return JSON.parse(JSON.stringify(session));
+}
+
+function putSessionToCache(portal, dialogId, session) {
+  const key = buildSessionCacheKey(portal, dialogId);
+  SESSION_CACHE.set(key, { session: cloneSession(session), loadedAt: Date.now() });
+}
+
+function takeSessionFromCache(portal, dialogId) {
+  const key = buildSessionCacheKey(portal, dialogId);
+  const cached = SESSION_CACHE.get(key);
+  if (!cached) return null;
+
+  if (Date.now() - cached.loadedAt > CACHE_TTL_MS) {
+    SESSION_CACHE.delete(key);
+    return null;
+  }
+
+  const updatedAt = Number(cached.session?.updatedAt || 0);
+  if (updatedAt > 0 && Date.now() - updatedAt > TTL_MS) {
+    SESSION_CACHE.delete(key);
+    return null;
+  }
+
+  return cloneSession(cached.session);
+}
+
+function dropSessionFromCache(portal, dialogId) {
+  SESSION_CACHE.delete(buildSessionCacheKey(portal, dialogId));
+}
+
+async function ensureDirAsync(p) {
+  await fsp.mkdir(p, { recursive: true });
+}
+
+async function safeRenameAsync(tmp, full) {
+  try {
+    await fsp.rename(tmp, full);
+  } catch (e) {
+    const err = /** @type {{ code?: string }} */ (e);
+    if (err && (err.code === "EEXIST" || err.code === "EPERM" || err.code === "EBUSY")) {
+      await fsp.rm(full, { force: true });
+      await fsp.rename(tmp, full);
+      return;
+    }
+    throw e;
+  }
+}
+
 /**
- * Прочитать сессию с диска.
- * Если файла нет или TTL истёк — вернуть null и удалить старый файл.
+ * Асинхронное чтение сессии без блокировки event loop.
+ * Использует короткий in-memory cache для горячего пути.
  */
-export function getSession(portal, dialogId) {
+export async function getSessionAsync(portal, dialogId) {
+  if (!portal || !dialogId) return null;
+
+  const cached = takeSessionFromCache(portal, dialogId);
+  if (cached) return cached;
+
   const full = buildSessionPath(portal, dialogId);
+  let raw = null;
+  try {
+    raw = await fsp.readFile(full, "utf8");
+  } catch (err) {
+    const e = /** @type {{ code?: string }} */ (err);
+    if (e?.code === "ENOENT") return null;
+    logger.error({ ctx: CTX, file: full, error: String(err) }, "Ошибка чтения сессии");
+    return null;
+  }
 
   try {
-    if (!fs.existsSync(full)) {
-      return null;
-    }
-
-    const raw = fs.readFileSync(full, "utf8");
     const session = normalizeSession(JSON.parse(raw));
-
     const updatedAt = session.updatedAt || 0;
     const age = Date.now() - updatedAt;
 
     if (age > TTL_MS) {
       try {
-        fs.unlinkSync(full);
+        await fsp.unlink(full);
       } catch (e) {
         logger.warn(
           { ctx: CTX, file: full, error: String(e) },
           "Не удалось удалить просроченный файл сессии",
         );
       }
+      dropSessionFromCache(portal, dialogId);
       return null;
     }
 
+    putSessionToCache(portal, dialogId, session);
     return session;
   } catch (err) {
-    logger.error(
-      { ctx: CTX, file: full, error: String(err) },
-      "Ошибка чтения сессии",
-    );
+    logger.error({ ctx: CTX, file: full, error: String(err) }, "Ошибка чтения сессии");
     return null;
   }
 }
 
 /**
- * Сохранить сессию на диск.
- * ВАЖНО: updatedAt обновляется всегда (TTL "скользящий").
- * Пишем атомарно: .tmp -> rename, чтобы не ловить битые JSON при падениях.
+ * Асинхронное сохранение сессии на диск (atomic tmp -> rename).
+ * Обновляет in-memory cache.
  */
-export function saveSession(portal, dialogId, session) {
-  if (!portal || !dialogId || !session) {
-    return;
-  }
+export async function saveSessionAsync(portal, dialogId, session) {
+  if (!portal || !dialogId || !session) return;
 
   try {
-    ensureDir(SESSIONS_PATH);
+    await ensureDirAsync(SESSIONS_PATH);
 
     const full = buildSessionPath(portal, dialogId);
     const normalized = normalizeSession(session);
-
     const toSave = {
       ...normalized,
       updatedAt: Date.now(),
     };
-
     const json = JSON.stringify(toSave, null, 2);
+    const tmp = `${full}.tmp.${process.pid}.${Date.now()}`;
 
-    const tmp = `${full}.tmp`;
-    fs.writeFileSync(tmp, json, "utf8");
-    fs.renameSync(tmp, full);
+    await fsp.writeFile(tmp, json, "utf8");
+    try {
+      await safeRenameAsync(tmp, full);
+    } finally {
+      await fsp.rm(tmp, { force: true }).catch(() => {});
+    }
+
+    putSessionToCache(portal, dialogId, toSave);
   } catch (err) {
-    logger.error(
-      { ctx: CTX, portal, dialogId, error: String(err) },
-      "Ошибка сохранения сессии",
-    );
+    logger.error({ ctx: CTX, portal, dialogId, error: String(err) }, "Ошибка сохранения сессии");
   }
 }
 
 /**
- * Периодическая очистка старых файлов.
- * Использует TTL_MS и поле updatedAt внутри JSON, если оно есть;
- * иначе ориентируется на mtime файла.
+ * Асинхронная очистка устаревших/битых сессий.
  */
-export function cleanupSessions() {
+export async function cleanupSessionsAsync() {
   try {
-    ensureDir(SESSIONS_PATH);
-    const files = fs.readdirSync(SESSIONS_PATH);
+    await ensureDirAsync(SESSIONS_PATH);
+    const files = await fsp.readdir(SESSIONS_PATH);
 
     for (const file of files) {
       if (!file.endsWith(".json")) continue;
 
       const full = path.join(SESSIONS_PATH, file);
-
       let stale = false;
 
       try {
-        const raw = fs.readFileSync(full, "utf8");
+        const raw = await fsp.readFile(full, "utf8");
         const s = normalizeSession(JSON.parse(raw));
         const updatedAt = s.updatedAt || 0;
-
         if (updatedAt && Date.now() - updatedAt > TTL_MS) {
           stale = true;
         } else if (!updatedAt) {
-          const stat = fs.statSync(full);
+          const stat = await fsp.stat(full);
           const mtime = stat.mtimeMs || stat.mtime?.getTime() || 0;
-          if (mtime && Date.now() - mtime > TTL_MS) {
-            stale = true;
-          }
+          if (mtime && Date.now() - mtime > TTL_MS) stale = true;
         }
       } catch {
         stale = true;
       }
 
-      if (stale) {
-        try {
-          fs.unlinkSync(full);
-        } catch (e) {
-          logger.warn(
-            { ctx: CTX, file: full, error: String(e) },
-            "Не удалось удалить устаревшую/битую сессию",
-          );
-        }
+      if (!stale) continue;
+
+      try {
+        await fsp.unlink(full);
+      } catch (e) {
+        logger.warn(
+          { ctx: CTX, file: full, error: String(e) },
+          "Не удалось удалить устаревшую/битую сессию",
+        );
       }
     }
+
+    SESSION_CACHE.clear();
   } catch (err) {
     logger.error({ ctx: CTX, error: String(err) }, "Ошибка cleanupSessions");
   }
@@ -273,14 +349,26 @@ function ensureDir(p) {
   }
 }
 
+function clearSessionCache() {
+  SESSION_CACHE.clear();
+}
+
+export {
+  CTX as __sessionStoreCtx,
+  SESSIONS_PATH as __sessionStorePath,
+  TTL_MS as __sessionStoreTtlMs,
+  buildSessionPath as __sessionStoreBuildSessionPath,
+  clearSessionCache as __sessionStoreClearSessionCache,
+  dropSessionFromCache as __sessionStoreDropSessionFromCache,
+  ensureDir as __sessionStoreEnsureDir,
+  normalizeSession as __sessionStoreNormalizeSession,
+  putSessionToCache as __sessionStorePutSessionToCache,
+  takeSessionFromCache as __sessionStoreTakeSessionFromCache,
+};
+
 // Запускаем периодическую очистку раз в TTL (можно уменьшить, если нужно)
 setInterval(() => {
-  try {
-    cleanupSessions();
-  } catch (e) {
-    logger.error(
-      { ctx: CTX, error: String(e) },
-      "Ошибка в interval cleanupSessions",
-    );
-  }
+  cleanupSessionsAsync().catch((e) => {
+    logger.error({ ctx: CTX, error: String(e) }, "Ошибка в interval cleanupSessions");
+  });
 }, TTL_MS).unref?.();

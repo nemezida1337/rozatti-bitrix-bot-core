@@ -8,7 +8,7 @@ import { logger } from "../../../../core/logger.js";
 import { safeUpdateLeadAndContact } from "../../../crm/leads.js";
 import { abcpLookupFromText } from "../../../external/pricing/abcp.js";
 import { crmSettings } from "../../../settings.crm.js";
-import { saveSession } from "../../sessionStore.js";
+import { saveSessionAsync } from "../../sessionStore.js";
 import { sendChatReplyIfAllowed } from "../shared/chatReply.js";
 import { mapCortexResultToLlmResponse } from "../shared/cortex.js";
 import { appendSessionHistoryTurn } from "../shared/historyContext.js";
@@ -57,7 +57,11 @@ export async function runManagerOemTriggerFlow({
     lead = await api.call("crm.lead.get", { id: session.leadId });
   } catch (err) {
     logger.warn(
-      { ctx: `${baseCtx}.MANAGER_OEM_TRIGGER`, leadId: session.leadId, err: err?.message || String(err) },
+      {
+        ctx: `${baseCtx}.MANAGER_OEM_TRIGGER`,
+        leadId: session.leadId,
+        err: err?.message || String(err),
+      },
       "Не смогли прочитать лид для проверки OEM/STATUS",
     );
     return false;
@@ -97,7 +101,10 @@ export async function runManagerOemTriggerFlow({
     if (nowSeen && Array.isArray(session.oem_candidates) && session.oem_candidates.length > 0) {
       const nowUpper = nowSeen.toUpperCase();
       const hasPendingMatch = session.oem_candidates.some(
-        (x) => String(x || "").trim().toUpperCase() === nowUpper,
+        (x) =>
+          String(x || "")
+            .trim()
+            .toUpperCase() === nowUpper,
       );
       allowFirstPassTrigger = hasPendingMatch;
     }
@@ -169,7 +176,7 @@ export async function runManagerOemTriggerFlow({
       });
 
       applyLlmToSession(session, llm);
-      saveSession(portalDomain, dialogId, session);
+      await saveSessionAsync(portalDomain, dialogId, session);
 
       // Ответ клиенту — только если не manual статус
       if (llm.reply) {
@@ -180,7 +187,7 @@ export async function runManagerOemTriggerFlow({
     }
 
     // Cortex null — просто сохраняем факт триггера
-    saveSession(portalDomain, dialogId, session);
+    await saveSessionAsync(portalDomain, dialogId, session);
     return true;
   }
 

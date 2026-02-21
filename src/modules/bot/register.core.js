@@ -4,7 +4,7 @@
 
 import { makeBitrixClient } from "../../core/bitrixClient.js";
 import { logger } from "../../core/logger.js";
-import { getPortal } from "../../core/store.js";
+import { getPortalAsync } from "../../core/store.js";
 import { sendWelcome } from "../openlines/api.js";
 // Раньше здесь был tryHandleOemMessage, теперь ABCP используется только как поиск в LLM-обработчике
 // import { tryHandleSelectionMessage } from "../external/pricing/abcp.js";
@@ -122,16 +122,13 @@ async function syncWelcomeBotBindings(api, botId, domain) {
       );
     }
   } catch (e) {
-    logger.warn(
-      { domain, e: String(e) },
-      "Open Lines welcome bot sync skipped",
-    );
+    logger.warn({ domain, e: String(e) }, "Open Lines welcome bot sync skipped");
   }
 }
 
 /** @param {string} domain */
 export async function ensureBotRegistered(domain) {
-  const portal = getPortal(domain);
+  const portal = await getPortalAsync(domain);
   if (!portal) throw new Error("Unknown portal: " + domain);
   const api = makeBitrixClient({
     domain,
@@ -255,8 +252,7 @@ export async function handleOnImBotMessageAdd({ body, portal, domain }) {
       DIALOG_ID: dialogId,
       MESSAGE: "VIN-поиск принят. (модуль подключается отдельно)",
     });
-    if (chatId)
-      await sendWelcome({ api, dialogId, text: "Приняли VIN. Ожидайте." });
+    if (chatId) await sendWelcome({ api, dialogId, text: "Приняли VIN. Ожидайте." });
     return;
   }
 

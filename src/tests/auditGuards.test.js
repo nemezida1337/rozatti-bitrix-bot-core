@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { normalizeIncomingMessage } from "../core/messageModel.js";
-import { getPortal, upsertPortal } from "../core/store.js";
+import { getPortal, upsertPortal } from "../core/store.legacy.js";
 import { buildDecision } from "../modules/bot/handler/decision.js";
 import { crmSettings } from "../modules/settings.crm.js";
 
@@ -30,7 +30,9 @@ async function startFakeInstallBitrix() {
 
       let payload = { result: true };
       if (method === "profile") {
-        payload = { result: { ID: "1", NAME: "Bot", LAST_NAME: "User", EMAIL: "bot@example.test" } };
+        payload = {
+          result: { ID: "1", NAME: "Bot", LAST_NAME: "User", EMAIL: "bot@example.test" },
+        };
       } else if (method === "imbot.bot.list") {
         payload = { result: [{ CODE: process.env.BOT_CODE || "ram_parts_bot" }] };
       }

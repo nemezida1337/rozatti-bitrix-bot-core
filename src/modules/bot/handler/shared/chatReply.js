@@ -1,7 +1,8 @@
 // src/modules/bot/handler/shared/chatReply.js
 
-import { logger } from "../../../../core/logger.js";
+import { claimRedisIdempotency } from "../../../../core/distributedState.js";
 import { eventBus } from "../../../../core/eventBus.js";
+import { logger } from "../../../../core/logger.js";
 import { getLeadStatusId } from "../../../crm/leadStateService.js";
 import { crmSettings } from "../../../settings.crm.js";
 
@@ -39,7 +40,7 @@ function pruneDedupCache(now, dedupMs) {
   }
 }
 
-function shouldSkipDuplicateReply({ portalDomain, dialogId, message, dedupMs }) {
+async function shouldSkipDuplicateReply({ portalDomain, dialogId, message, dedupMs }) {
   const normalized = normalizeReplyText(message);
   if (!normalized) return false;
 
@@ -51,6 +52,19 @@ function shouldSkipDuplicateReply({ portalDomain, dialogId, message, dedupMs }) 
   if (lastTs > 0 && now - lastTs <= dedupMs) {
     return true;
   }
+
+  const distributedClaim = await claimRedisIdempotency({
+    scope: "chat_reply_dedup",
+    key,
+    ttlMs: dedupMs,
+    value: String(now),
+  });
+
+  if (distributedClaim && distributedClaim.claimed === false) {
+    _recentReplies.set(key, now);
+    return true;
+  }
+
   _recentReplies.set(key, now);
   return false;
 }
@@ -159,7 +173,7 @@ export async function sendChatReplyIfAllowed({
 
   const replyText = message || "…";
   const dedupMs = resolveReplyDedupMs();
-  const isDuplicate = shouldSkipDuplicateReply({
+  const isDuplicate = await shouldSkipDuplicateReply({
     portalDomain,
     dialogId,
     message: replyText,

@@ -1,13 +1,18 @@
 import axios from "axios";
 
+import {
+  claimRedisIdempotency,
+  clearRedisIdempotency,
+  setRedisIdempotency,
+  withRedisLock,
+} from "../../../core/distributedState.js";
 import { logger } from "../../../core/logger.js";
 
 const CTX = "ABCP_ORDER";
 
 const ABCP_DOMAIN = process.env.ABCP_DOMAIN || process.env.ABCP_HOST;
 const ABCP_LOGIN = process.env.ABCP_KEY || process.env.ABCP_USERLOGIN;
-const ABCP_USERPSW_MD5 =
-  process.env.ABCP_USERPSW_MD5 || process.env.ABCP_USERPSW;
+const ABCP_USERPSW_MD5 = process.env.ABCP_USERPSW_MD5 || process.env.ABCP_USERPSW;
 
 const api = axios.create({
   baseURL: `https://${ABCP_DOMAIN}`,
@@ -278,6 +283,21 @@ function getOrderIdempotencyTtlMs() {
   return Number.isFinite(raw) && raw > 0 ? raw : 10 * 60 * 1000;
 }
 
+function getOrderDistributedLockTtlMs() {
+  const raw = Number(process.env.ABCP_ORDER_LOCK_TTL_MS || 45000);
+  return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : 45000;
+}
+
+function getOrderDistributedLockWaitMs() {
+  const raw = Number(process.env.ABCP_ORDER_LOCK_WAIT_MS || 45000);
+  return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : 45000;
+}
+
+function getOrderDistributedLockPollMs() {
+  const raw = Number(process.env.ABCP_ORDER_LOCK_POLL_MS || 120);
+  return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : 120;
+}
+
 function makeSelectedOffersSignature(selectedOffers = []) {
   const parts = selectedOffers
     .map((o) => {
@@ -297,6 +317,18 @@ function makeOrderIdempotencyKey({ dialogId, selectedOffers }) {
   const dialogPart = String(dialogId || "no-dialog");
   const offersPart = makeSelectedOffersSignature(selectedOffers);
   return `${dialogPart}::${offersPart}`;
+}
+
+function parseOrderNumbersFromIdemValue(rawValue) {
+  if (rawValue == null) return [];
+
+  try {
+    const parsed = typeof rawValue === "string" ? JSON.parse(rawValue) : rawValue;
+    const list = Array.isArray(parsed?.orderNumbers) ? parsed.orderNumbers : [];
+    return Array.from(new Set(list.map((x) => String(x || "").trim()).filter(Boolean)));
+  } catch {
+    return [];
+  }
 }
 
 function getRecentOrderByKey(key) {
@@ -338,7 +370,10 @@ async function withAccountOrderLock(task) {
     release = resolve;
   });
 
-  accountOrderLocks.set(key, previous.then(() => current));
+  accountOrderLocks.set(
+    key,
+    previous.then(() => current),
+  );
   await previous;
 
   try {
@@ -1104,61 +1139,117 @@ export async function createAbcpOrderFromSession({ session, llm, dialogId } = {}
     return { ok: false, reason: "NO_ORDERABLE_POSITIONS", orderNumbers: [] };
   }
 
-  return withAccountOrderLock(async () => {
-    const idemKey = makeOrderIdempotencyKey({ dialogId, selectedOffers });
-    const recentOrder = getRecentOrderByKey(idemKey);
-    if (recentOrder) {
-      return {
-        ok: Array.isArray(recentOrder.orderNumbers) && recentOrder.orderNumbers.length > 0,
-        reason: "ORDER_ALREADY_SUBMITTED_RECENTLY",
-        orderNumbers: Array.isArray(recentOrder.orderNumbers) ? recentOrder.orderNumbers : [],
-      };
-    }
+  const accountLockKey = getAccountOrderLockKey();
+  return withRedisLock(
+    {
+      scope: "abcp_order_account_lock",
+      key: accountLockKey,
+      ttlMs: getOrderDistributedLockTtlMs(),
+      waitTimeoutMs: getOrderDistributedLockWaitMs(),
+      pollMs: getOrderDistributedLockPollMs(),
+    },
+    async () =>
+      withAccountOrderLock(async () => {
+        const idemKey = makeOrderIdempotencyKey({ dialogId, selectedOffers });
+        const idemTtlMs = getOrderIdempotencyTtlMs();
+        const recentOrder = getRecentOrderByKey(idemKey);
+        if (recentOrder) {
+          return {
+            ok: Array.isArray(recentOrder.orderNumbers) && recentOrder.orderNumbers.length > 0,
+            reason: "ORDER_ALREADY_SUBMITTED_RECENTLY",
+            orderNumbers: Array.isArray(recentOrder.orderNumbers) ? recentOrder.orderNumbers : [],
+          };
+        }
 
-    try {
-      let result = await tryCreateOrderViaBasketV1({ positions });
+        const redisClaim = await claimRedisIdempotency({
+          scope: "abcp_order_idempotency",
+          key: idemKey,
+          ttlMs: idemTtlMs,
+          value: JSON.stringify({
+            state: "pending",
+            dialogId: String(dialogId || ""),
+            at: Date.now(),
+          }),
+        });
 
-      if (result?.reason === "ORDERS_V1_DISABLED") {
-        logger.info(
-          { ctx: CTX, dialogId: dialogId || null },
-          "ABCP Orders v1 отключен, переключаемся на TS API",
-        );
-        result = await tryCreateOrderViaTsApi({ selectedOffers, session, dialogId });
-      }
+        if (redisClaim && redisClaim.claimed === false) {
+          const distributedNumbers = parseOrderNumbersFromIdemValue(redisClaim.existingValue);
+          rememberRecentOrder(idemKey, distributedNumbers);
+          return {
+            ok: distributedNumbers.length > 0,
+            reason: "ORDER_ALREADY_SUBMITTED_RECENTLY",
+            orderNumbers: distributedNumbers,
+          };
+        }
 
-      if (!result) {
-        return { ok: false, reason: "ABCP_ORDER_ERROR", orderNumbers: [] };
-      }
+        try {
+          let result = await tryCreateOrderViaBasketV1({ positions });
 
-      if (result.ok || result.reason === "ORDER_ACCEPTED_WITHOUT_NUMBER") {
-        rememberRecentOrder(idemKey, result.orderNumbers || []);
-      }
+          if (result?.reason === "ORDERS_V1_DISABLED") {
+            logger.info(
+              { ctx: CTX, dialogId: dialogId || null },
+              "ABCP Orders v1 отключен, переключаемся на TS API",
+            );
+            result = await tryCreateOrderViaTsApi({ selectedOffers, session, dialogId });
+          }
 
-      if (result.ok && Array.isArray(result.orderNumbers) && result.orderNumbers.length > 0) {
-        logger.info(
-          {
-            ctx: CTX,
-            dialogId: dialogId || null,
-            selectedOffers: selectedOffers.length,
-            createdOrders: result.orderNumbers,
-          },
-          "Заказ ABCP создан",
-        );
-      }
+          if (!result) {
+            if (redisClaim && redisClaim.claimed === true) {
+              await clearRedisIdempotency({ scope: "abcp_order_idempotency", key: idemKey });
+            }
+            return { ok: false, reason: "ABCP_ORDER_ERROR", orderNumbers: [] };
+          }
 
-      return result;
-    } catch (e) {
-      logger.error(
-        {
-          ctx: CTX,
-          dialogId: dialogId || null,
-          error: String(e),
-        },
-        "Ошибка создания заказа в ABCP",
-      );
-      return { ok: false, reason: "ABCP_ORDER_ERROR", orderNumbers: [] };
-    }
-  });
+          if (result.ok || result.reason === "ORDER_ACCEPTED_WITHOUT_NUMBER") {
+            const finalOrderNumbers = Array.isArray(result.orderNumbers) ? result.orderNumbers : [];
+            rememberRecentOrder(idemKey, finalOrderNumbers);
+            if (redisClaim && redisClaim.claimed === true) {
+              await setRedisIdempotency({
+                scope: "abcp_order_idempotency",
+                key: idemKey,
+                ttlMs: idemTtlMs,
+                value: JSON.stringify({
+                  state: "done",
+                  dialogId: String(dialogId || ""),
+                  at: Date.now(),
+                  reason: result.reason || null,
+                  orderNumbers: finalOrderNumbers,
+                }),
+              });
+            }
+          } else if (redisClaim && redisClaim.claimed === true) {
+            await clearRedisIdempotency({ scope: "abcp_order_idempotency", key: idemKey });
+          }
+
+          if (result.ok && Array.isArray(result.orderNumbers) && result.orderNumbers.length > 0) {
+            logger.info(
+              {
+                ctx: CTX,
+                dialogId: dialogId || null,
+                selectedOffers: selectedOffers.length,
+                createdOrders: result.orderNumbers,
+              },
+              "Заказ ABCP создан",
+            );
+          }
+
+          return result;
+        } catch (e) {
+          if (redisClaim && redisClaim.claimed === true) {
+            await clearRedisIdempotency({ scope: "abcp_order_idempotency", key: idemKey });
+          }
+          logger.error(
+            {
+              ctx: CTX,
+              dialogId: dialogId || null,
+              error: String(e),
+            },
+            "Ошибка создания заказа в ABCP",
+          );
+          return { ok: false, reason: "ABCP_ORDER_ERROR", orderNumbers: [] };
+        }
+      }),
+  );
 }
 
 export default { createAbcpOrderFromSession };

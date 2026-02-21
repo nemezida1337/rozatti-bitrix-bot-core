@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { crmSettings } from "../config/settings.crm.js";
 import { logger } from "../core/logger.js";
-import { upsertPortal } from "../core/store.js";
+import { upsertPortal } from "../core/store.legacy.js";
 import { safeUpdateLeadAndContact } from "../modules/crm/leads.js";
 
 process.env.TOKENS_FILE = "./data/portals.safeUpdateLeadAndContact.test.json";
@@ -139,10 +139,7 @@ test("safeUpdateLeadAndContact: DELIVERY_ADDRESS is not written on CONTACT stage
     const leadUpdate = fake.calls.find((c) => c.method === "crm.lead.update");
     assert.ok(leadUpdate, "crm.lead.update must be called");
     assert.equal(
-      Object.prototype.hasOwnProperty.call(
-        leadUpdate.form,
-        `fields[${deliveryField}]`,
-      ),
+      Object.prototype.hasOwnProperty.call(leadUpdate.form, `fields[${deliveryField}]`),
       false,
       "Delivery address must not be written on CONTACT stage",
     );
@@ -237,6 +234,47 @@ test("safeUpdateLeadAndContact: HARD_PICK stage maps to IN_WORK status", async (
   }
 });
 
+test("safeUpdateLeadAndContact: LOST stage maps to JUNK status", async () => {
+  const fake = await startFakeBitrix();
+  const domain = "audit-safe-lost-maps-junk.bitrix24.ru";
+
+  upsertPortal(domain, {
+    domain,
+    baseUrl: fake.baseUrl,
+    accessToken: "token-lost-1",
+    refreshToken: "refresh-lost-1",
+  });
+
+  try {
+    await safeUpdateLeadAndContact({
+      portal: domain,
+      dialogId: "chat-lost-1",
+      chatId: "lost-1",
+      session: { leadId: 1402, state: { stage: "PRICING" } },
+      llm: {
+        stage: "LOST",
+        action: "reply",
+        oems: [],
+        offers: [],
+        chosen_offer_id: null,
+        update_lead_fields: {},
+      },
+      lastUserMessage: "не актуально",
+      usedBackend: "HF_CORTEX",
+    });
+
+    const leadUpdate = fake.calls.find((c) => c.method === "crm.lead.update");
+    assert.ok(leadUpdate, "crm.lead.update must be called");
+    assert.equal(
+      leadUpdate.form["fields[STATUS_ID]"],
+      crmSettings.stageToStatusId.LOST,
+      "LOST must map to JUNK status",
+    );
+  } finally {
+    await fake.close();
+  }
+});
+
 test("safeUpdateLeadAndContact: writes UF_OEM when chosen_offer_id points to offer OEM", async () => {
   const fake = await startFakeBitrix();
   const domain = "audit-safe-chosen-oem.bitrix24.ru";
@@ -304,9 +342,7 @@ test("safeUpdateLeadAndContact: FINAL stage sets product rows from offers", asyn
         stage: "FINAL",
         action: "reply",
         oems: ["OEMX1"],
-        offers: [
-          { id: 1, oem: "OEMX1", price: 4567, brand: "BMW", quantity: 2 },
-        ],
+        offers: [{ id: 1, oem: "OEMX1", price: 4567, brand: "BMW", quantity: 2 }],
         chosen_offer_id: 1,
         update_lead_fields: {},
       },

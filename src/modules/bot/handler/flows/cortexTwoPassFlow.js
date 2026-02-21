@@ -9,7 +9,7 @@ import { convertLeadToDealAfterAbcpOrder } from "../../../crm/leads/convertLeadT
 import { safeUpdateLeadAndContact } from "../../../crm/leads.js";
 import { abcpLookupFromText } from "../../../external/pricing/abcp.js";
 import { createAbcpOrderFromSession } from "../../../external/pricing/abcpOrder.js";
-import { saveSession } from "../../sessionStore.js";
+import { saveSessionAsync } from "../../sessionStore.js";
 import { sendChatReplyIfAllowed } from "../shared/chatReply.js";
 import { mapCortexResultToLlmResponse } from "../shared/cortex.js";
 import { appendSessionHistoryTurn } from "../shared/historyContext.js";
@@ -31,9 +31,7 @@ function toPositiveInt(value) {
 
 function normalizeOrderNumbers(orderNumbers) {
   if (!Array.isArray(orderNumbers)) return [];
-  return Array.from(
-    new Set(orderNumbers.map((x) => String(x || "").trim()).filter(Boolean)),
-  );
+  return Array.from(new Set(orderNumbers.map((x) => String(x || "").trim()).filter(Boolean)));
 }
 
 function makeLeadConversionKey({ leadId, orderNumbers }) {
@@ -67,11 +65,12 @@ function hasSelectedOffer(llm, session) {
   const chosenIds = parseChosenIds(llm?.chosen_offer_id ?? session?.state?.chosen_offer_id);
   if (!chosenIds.length) return false;
 
-  const offers = Array.isArray(llm?.offers) && llm.offers.length > 0
-    ? llm.offers
-    : Array.isArray(session?.state?.offers)
-      ? session.state.offers
-      : [];
+  const offers =
+    Array.isArray(llm?.offers) && llm.offers.length > 0
+      ? llm.offers
+      : Array.isArray(session?.state?.offers)
+        ? session.state.offers
+        : [];
 
   if (!offers.length) return false;
   return offers.some((offer) => chosenIds.includes(Number(offer?.id)));
@@ -114,11 +113,7 @@ function hasDeliveryAddress(llm, session) {
 }
 
 function hasPhone(llm, session) {
-  const candidates = [
-    llm?.contact_update?.phone,
-    llm?.update_lead_fields?.PHONE,
-    session?.phone,
-  ];
+  const candidates = [llm?.contact_update?.phone, llm?.update_lead_fields?.PHONE, session?.phone];
   return candidates.some((x) => !!normalizePhone(x));
 }
 
@@ -252,14 +247,7 @@ async function tryConvertLeadAfterAbcpOrder({
   }
 }
 
-async function tryCreateAbcpOrderIfNeeded({
-  llm,
-  api,
-  portalDomain,
-  session,
-  dialogId,
-  baseCtx,
-}) {
+async function tryCreateAbcpOrderIfNeeded({ llm, api, portalDomain, session, dialogId, baseCtx }) {
   if (!shouldCreateAbcpOrder(llm, session)) return llm;
 
   const created = await createAbcpOrderFromSession({ session, llm, dialogId });
@@ -325,9 +313,7 @@ export async function runCortexTwoPassFlow({
 
   // ✅ если есть offers в сессии — прокидываем их в Cortex, чтобы выбор по id был стабильным
   const sessionOffers =
-    session?.state?.offers &&
-    Array.isArray(session.state.offers) &&
-    session.state.offers.length > 0
+    session?.state?.offers && Array.isArray(session.state.offers) && session.state.offers.length > 0
       ? session.state.offers
       : null;
 
@@ -355,7 +341,7 @@ export async function runCortexTwoPassFlow({
       "cortex_fallback_first_pass",
     );
     session.lastCortexRoute = "cortex_fallback_first_pass";
-    saveSession(portalDomain, dialogId, session);
+    await saveSessionAsync(portalDomain, dialogId, session);
     return true;
   }
 
@@ -391,7 +377,7 @@ export async function runCortexTwoPassFlow({
   applyLlmToSession(session, llm1);
   session.lastCortexRoute = "cortex_first_pass_reply";
   await sendBotReply(llm1.reply || "…", "cortex_first_pass_reply");
-  saveSession(portalDomain, dialogId, session);
+  await saveSessionAsync(portalDomain, dialogId, session);
 
   // 5) ВТОРОЙ ПРОХОД: ABCP → HF-CORTEX (офферы)
   if (llm1.action === "abcp_lookup" && Array.isArray(llm1.oems) && llm1.oems.length > 0) {
@@ -402,10 +388,7 @@ export async function runCortexTwoPassFlow({
     try {
       const abcpData = await abcpLookupFromText(text, llm1.oems);
 
-      logger.info(
-        { ctx: ctxAbcp, abcpKeys: Object.keys(abcpData || {}) },
-        "ABCP данные получены",
-      );
+      logger.info({ ctx: ctxAbcp, abcpKeys: Object.keys(abcpData || {}) }, "ABCP данные получены");
 
       if (abcpData && Object.keys(abcpData).length > 0) {
         // Кешируем ABCP-ответ в сессии для последующих сообщений
@@ -437,7 +420,7 @@ export async function runCortexTwoPassFlow({
         if (!cortexRaw2) {
           logger.warn({ ctx: ctxAbcp }, "Второй вызов Cortex вернул null");
           session.lastCortexRoute = "cortex_second_pass_null";
-          saveSession(portalDomain, dialogId, session);
+          await saveSessionAsync(portalDomain, dialogId, session);
           return true;
         }
 
@@ -463,7 +446,7 @@ export async function runCortexTwoPassFlow({
             "Второй проход Cortex не дал прогресса — не отправляем повторный ответ клиенту",
           );
           session.lastCortexRoute = "cortex_second_pass_no_progress";
-          saveSession(portalDomain, dialogId, session);
+          await saveSessionAsync(portalDomain, dialogId, session);
           return true;
         }
 
@@ -480,11 +463,11 @@ export async function runCortexTwoPassFlow({
         applyLlmToSession(session, llm2);
         session.lastCortexRoute = "cortex_second_pass_reply";
         await sendBotReply(llm2.reply || "…", "cortex_second_pass_reply");
-        saveSession(portalDomain, dialogId, session);
+        await saveSessionAsync(portalDomain, dialogId, session);
       } else {
         logger.info({ ctx: ctxAbcp }, "ABCP не вернул данных, второй проход Cortex пропущен");
         session.lastCortexRoute = "cortex_second_pass_skipped_no_abcp";
-        saveSession(portalDomain, dialogId, session);
+        await saveSessionAsync(portalDomain, dialogId, session);
       }
     } catch (err) {
       logger.error(
@@ -496,7 +479,7 @@ export async function runCortexTwoPassFlow({
         "cortex_second_pass_error",
       );
       session.lastCortexRoute = "cortex_second_pass_error";
-      saveSession(portalDomain, dialogId, session);
+      await saveSessionAsync(portalDomain, dialogId, session);
     }
   }
 

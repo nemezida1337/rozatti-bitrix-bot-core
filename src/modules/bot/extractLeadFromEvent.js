@@ -4,7 +4,7 @@
 
 import { logger } from "../../core/logger.js";
 
-import { getSession, saveSession } from "./sessionStore.js";
+import { getSessionAsync, saveSessionAsync } from "./sessionStore.js";
 
 const CTX = "modules/bot/extractLeadFromEvent";
 
@@ -14,7 +14,7 @@ const CTX = "modules/bot/extractLeadFromEvent";
  *
  * @param {object} body - сырое тело события Bitrix (req.body)
  */
-export function hydrateSessionLeadFromEvent(body) {
+export async function hydrateSessionLeadFromEvent(body) {
   try {
     if (!body) return;
 
@@ -39,35 +39,27 @@ export function hydrateSessionLeadFromEvent(body) {
     if (!dialogId) return;
 
     // Нас интересуют только открытые линии
-    const chatEntityType =
-      params.CHAT_ENTITY_TYPE || params.chat_entity_type || null;
+    const chatEntityType = params.CHAT_ENTITY_TYPE || params.chat_entity_type || null;
     if (chatEntityType !== "LINES") {
       return;
     }
 
-    const raw =
-      params.CHAT_ENTITY_DATA_1 || params.chat_entity_data_1 || null;
+    const raw = params.CHAT_ENTITY_DATA_1 || params.chat_entity_data_1 || null;
     if (!raw) {
-      logger.debug(
-        { ctx: CTX, portal, dialogId },
-        "Нет CHAT_ENTITY_DATA_1, пропускаем",
-      );
+      logger.debug({ ctx: CTX, portal, dialogId }, "Нет CHAT_ENTITY_DATA_1, пропускаем");
       return;
     }
 
     // Пример строки: IMOL|...|...|LEAD|18758|...
     const m = String(raw).match(/LEAD\|(\d+)/);
     if (!m) {
-      logger.debug(
-        { ctx: CTX, portal, dialogId, raw },
-        "CHAT_ENTITY_DATA_1 без LEAD|ID",
-      );
+      logger.debug({ ctx: CTX, portal, dialogId, raw }, "CHAT_ENTITY_DATA_1 без LEAD|ID");
       return;
     }
 
     const leadId = m[1];
 
-    let session = getSession(portal, dialogId) || {
+    let session = (await getSessionAsync(portal, dialogId)) || {
       state: { stage: "NEW", client_name: null, last_reply: null },
       name: null,
       phone: null,
@@ -85,16 +77,13 @@ export function hydrateSessionLeadFromEvent(body) {
     }
 
     session.leadId = leadId;
-    saveSession(portal, dialogId, session);
+    await saveSessionAsync(portal, dialogId, session);
 
     logger.info(
       { ctx: CTX, portal, dialogId, leadId, raw },
       "Привязали авто-лид к сессии из CHAT_ENTITY_DATA_1",
     );
   } catch (err) {
-    logger.error(
-      { ctx: CTX, error: String(err) },
-      "Ошибка hydrateSessionLeadFromEvent",
-    );
+    logger.error({ ctx: CTX, error: String(err) }, "Ошибка hydrateSessionLeadFromEvent");
   }
 }

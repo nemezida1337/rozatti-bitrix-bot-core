@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { refreshTokens } from "../core/oauth.js";
-import { getPortal, upsertPortal } from "../core/store.js";
+import { getPortal, upsertPortal } from "../core/store.legacy.js";
 
 const TOKENS_FILE = "./data/portals.oauth.test.json";
 
@@ -64,10 +64,7 @@ test("oauth: throws when portal has no refresh token", async () => {
         accessToken: "old-access",
       });
 
-      await assert.rejects(
-        () => refreshTokens(domain),
-        /No refresh_token saved for domain/,
-      );
+      await assert.rejects(() => refreshTokens(domain), /No refresh_token saved for domain/);
     });
   } finally {
     restoreStoreFile(backup);
@@ -188,10 +185,7 @@ test("oauth: concurrent refresh for same domain performs single fetch", async ()
           BITRIX_CLIENT_SECRET: "client-secret",
         },
         async () => {
-          const [t1, t2] = await Promise.all([
-            refreshTokens(domain),
-            refreshTokens(domain),
-          ]);
+          const [t1, t2] = await Promise.all([refreshTokens(domain), refreshTokens(domain)]);
           assert.equal(t1, "new-access-2");
           assert.equal(t2, "new-access-2");
           assert.equal(fetchCalls, 1);
@@ -232,10 +226,7 @@ test("oauth: throws bitrix error message when refresh fails", async () => {
           BITRIX_CLIENT_SECRET: "client-secret",
         },
         async () => {
-          await assert.rejects(
-            () => refreshTokens(domain),
-            /refresh token expired/,
-          );
+          await assert.rejects(() => refreshTokens(domain), /refresh token expired/);
         },
       );
     });

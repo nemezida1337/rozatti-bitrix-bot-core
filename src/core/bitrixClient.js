@@ -2,7 +2,7 @@
 
 import { logger } from "./logger.js";
 import { refreshTokens } from "./oauth.js";
-import { getPortal } from "./store.js";
+import { getPortalAsync } from "./store.js";
 
 /**
  * @typedef {Object} BitrixPortal
@@ -27,6 +27,18 @@ import { getPortal } from "./store.js";
 
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** @param {any} value */
+function isTruthy(value) {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function isDebugProfileProbeEnabled() {
+  return isTruthy(process.env.BITRIX_DEBUG_PROFILE);
+}
 
 // рекурсивная сборка form-urlencoded a[b][c]=...
 /** @param {Record<string, any>} params */
@@ -64,15 +76,16 @@ export function makeBitrixClient({ domain, baseUrl, accessToken }) {
 
   // --- DEBUG: один раз логируем, от какого пользователя идут REST-вызовы ---
   let debugUserLogged = false;
+  const debugProfileProbeEnabled = isDebugProfileProbeEnabled();
 
   /**
    * @param {string} method
    * @param {Record<string, any>} [params]
    */
   async function call(method, params = {}) {
-    // Один раз за жизнь процесса узнаём реального Bitrix-пользователя.
-    // Используем метод profile, он не требует никаких scope'ов.
-    if (!debugUserLogged && method !== "profile") {
+    // Один раз за жизнь процесса узнаём реального Bitrix-пользователя,
+    // но только при явном debug-флаге.
+    if (debugProfileProbeEnabled && !debugUserLogged && method !== "profile") {
       debugUserLogged = true;
       try {
         const profile = await call("profile", {});
@@ -82,13 +95,10 @@ export function makeBitrixClient({ domain, baseUrl, accessToken }) {
             name: `${profile.NAME} ${profile.LAST_NAME}`,
             email: profile.EMAIL,
           },
-          "[DEBUG] Bitrix REST current user (via profile)"
+          "[DEBUG] Bitrix REST current user (via profile)",
         );
       } catch (err) {
-        logger.error(
-          { err },
-          "[DEBUG] Failed to get Bitrix current user via profile"
-        );
+        logger.error({ err }, "[DEBUG] Failed to get Bitrix current user via profile");
       }
     }
 
@@ -102,7 +112,7 @@ export function makeBitrixClient({ domain, baseUrl, accessToken }) {
 
       // всегда берём свежие данные из store (могли обновиться при refresh)
       /** @type {BitrixPortal} */
-      const portal = getPortal(domain) || { baseUrl, accessToken };
+      const portal = (await getPortalAsync(domain)) || { baseUrl, accessToken };
       const root = String(portal.baseUrl || baseUrl || "").replace(/\/+$/, "");
       const apiBase = root.endsWith("/rest") ? root : `${root}/rest`;
       const url = new URL(`${apiBase}/${method}.json`);
@@ -114,10 +124,7 @@ export function makeBitrixClient({ domain, baseUrl, accessToken }) {
         try {
           token = await refreshTokens(domain);
         } catch (e) {
-          logger.warn(
-            { e: String(e) },
-            "proactive refresh failed"
-          );
+          logger.warn({ e: String(e) }, "proactive refresh failed");
         }
       }
 
@@ -150,7 +157,7 @@ export function makeBitrixClient({ domain, baseUrl, accessToken }) {
             const refreshErr = /** @type {{ message?: string }} */ (e);
             throw Object.assign(
               new Error("refresh_token failed: " + (refreshErr.message || String(e))),
-              { code, res: json }
+              { code, res: json },
             );
           }
         }
@@ -160,10 +167,7 @@ export function makeBitrixClient({ domain, baseUrl, accessToken }) {
           await sleep(250 * attempt);
           continue;
         }
-        throw Object.assign(
-          new Error(json.error_description || code),
-          { code, res: json }
-        );
+        throw Object.assign(new Error(json.error_description || code), { code, res: json });
       }
 
       logger.info({ method, duration }, "Bitrix REST ok");

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { logger } from "../core/logger.js";
-import { getPortal, upsertPortal } from "../core/store.js";
+import { getPortal, upsertPortal } from "../core/store.legacy.js";
 
 process.env.TOKENS_FILE = "./data/portals.bitrixRouteAdvanced.test.json";
 

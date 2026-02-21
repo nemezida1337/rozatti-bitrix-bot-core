@@ -26,6 +26,9 @@ logs/
 .env.*.local
 
 # === Runtime-данные бота ===
+_runtime/*
+!_runtime/.gitkeep
+.tmp-ci-repro-*/
 data/portals.json
 data/portals.*.test.json
 data/sessions/

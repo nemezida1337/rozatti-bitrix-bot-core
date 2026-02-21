@@ -32,6 +32,7 @@ export const crmSettings = {
    * - UC_T710VD  = "Создать в ABCP"
    * - UC_ZMK36I  = "Постоянный клиент"
    * - CONVERTED  = "Качественный лид"
+   * - JUNK       = "Некачественный лид"
    *
    * Важно:
    * - Финальная стадия лида для бота: FINAL/ABCP_CREATE → "Создать в ABCP".
@@ -66,6 +67,9 @@ export const crmSettings = {
 
     // 8) Качественный лид
     SUCCESS: "CONVERTED",
+
+    // 9) Потерянный/неактуальный лид
+    LOST: "JUNK",
   },
 
   /**
@@ -74,6 +78,7 @@ export const crmSettings = {
    */
   stageAliases: {
     ADDRESS: "CONTACT",
+    BAD_LEAD: "LOST",
   },
 
   /**

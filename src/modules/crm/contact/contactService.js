@@ -2,12 +2,12 @@
 
 import { makeBitrixClient } from "../../../core/bitrixClient.js";
 import { logger } from "../../../core/logger.js";
-import { getPortal } from "../../../core/store.js";
+import { getPortalAsync } from "../../../core/store.js";
 
 const CTX = "crm/contact";
 
-function bx(portal) {
-  const portalCfg = getPortal(portal);
+async function bx(portal) {
+  const portalCfg = await getPortalAsync(portal);
   if (!portalCfg) return null;
 
   return makeBitrixClient({
@@ -33,7 +33,7 @@ function unwrapResult(res) {
  * Находим контакт по телефону (возвращаем контакт-объект или null)
  */
 async function findContactByPhone(portal, phone) {
-  const client = bx(portal);
+  const client = await bx(portal);
   if (!client || !phone) return null;
 
   try {
@@ -65,7 +65,7 @@ async function findContactByPhone(portal, phone) {
  * Создаёт новый контакт и привязывает его к лиду.
  */
 async function createAndBindContact(portal, leadId, fields) {
-  const client = bx(portal);
+  const client = await bx(portal);
   if (!client) return null;
 
   let contactId = null;
@@ -90,15 +90,9 @@ async function createAndBindContact(portal, leadId, fields) {
       id: leadId,
       fields: { CONTACT_ID: contactId },
     });
-    logger.info(
-      { ctx: CTX, leadId, contactId },
-      "Создан и привязан новый контакт",
-    );
+    logger.info({ ctx: CTX, leadId, contactId }, "Создан и привязан новый контакт");
   } catch (err) {
-    logger.error(
-      { ctx: CTX, leadId, contactId, err },
-      "Ошибка привязки нового контакта к лиду",
-    );
+    logger.error({ ctx: CTX, leadId, contactId, err }, "Ошибка привязки нового контакта к лиду");
   }
 
   return contactId;
@@ -108,7 +102,7 @@ async function createAndBindContact(portal, leadId, fields) {
  * Обновляет существующий контакт
  */
 async function updateContact(portal, contactId, fields) {
-  const client = bx(portal);
+  const client = await bx(portal);
   if (!client) return;
 
   await client.call("crm.contact.update", {
@@ -131,7 +125,7 @@ async function updateContact(portal, contactId, fields) {
  *         - не нашли → crm.contact.add + crm.lead.update(CONTACT_ID)
  */
 export async function ensureContact(portal, leadId, fields) {
-  const client = bx(portal);
+  const client = await bx(portal);
   if (!client) return null;
 
   try {

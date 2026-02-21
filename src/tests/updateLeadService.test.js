@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { upsertPortal } from "../core/store.js";
+import { upsertPortal } from "../core/store.legacy.js";
 import {
   addLeadComment,
   setLeadProductRows,
@@ -61,13 +61,31 @@ test("updateLeadService: updateLead calls crm.lead.update and returns result", a
   globalThis.fetch = async (url) => {
     const method = methodFromUrl(url);
     if (method === "profile") {
-      return { ok: true, status: 200, async json() { return { result: {} }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: {} };
+        },
+      };
     }
     if (method === "crm.lead.update") {
       called = true;
-      return { ok: true, status: 200, async json() { return { result: true }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: true };
+        },
+      };
     }
-    return { ok: true, status: 200, async json() { return { result: true }; } };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { result: true };
+      },
+    };
   };
 
   const res = await updateLead(domain, 1002, { STATUS_ID: "PROCESSED" });
@@ -83,13 +101,31 @@ test("updateLeadService: addLeadComment no-op for empty args and works for valid
   globalThis.fetch = async (url) => {
     const method = methodFromUrl(url);
     if (method === "profile") {
-      return { ok: true, status: 200, async json() { return { result: {} }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: {} };
+        },
+      };
     }
     if (method === "crm.timeline.comment.add") {
       callCount += 1;
-      return { ok: true, status: 200, async json() { return { result: 1 }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: 1 };
+        },
+      };
     }
-    return { ok: true, status: 200, async json() { return { result: true }; } };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { result: true };
+      },
+    };
   };
 
   await addLeadComment(domain, null, "x");
@@ -107,13 +143,31 @@ test("updateLeadService: setLeadProductRows validates rows and calls API only fo
     const method = methodFromUrl(url);
     const params = new URLSearchParams(String(opts.body || ""));
     if (method === "profile") {
-      return { ok: true, status: 200, async json() { return { result: {} }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: {} };
+        },
+      };
     }
     if (method === "crm.lead.productrows.set") {
       payloads.push(Object.fromEntries(params.entries()));
-      return { ok: true, status: 200, async json() { return { result: true }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: true };
+        },
+      };
     }
-    return { ok: true, status: 200, async json() { return { result: true }; } };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { result: true };
+      },
+    };
   };
 
   assert.equal(await setLeadProductRows(domain, null, [{ PRODUCT_NAME: "A", PRICE: 1 }]), null);
@@ -137,18 +191,48 @@ test("updateLeadService: API errors are handled and return null/void", async () 
   globalThis.fetch = async (url) => {
     const method = methodFromUrl(url);
     if (method === "profile") {
-      return { ok: true, status: 200, async json() { return { result: {} }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: {} };
+        },
+      };
     }
     if (method === "crm.lead.update") {
-      return { ok: true, status: 200, async json() { return { error: "FAIL", error_description: "lead fail" }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { error: "FAIL", error_description: "lead fail" };
+        },
+      };
     }
     if (method === "crm.lead.productrows.set") {
-      return { ok: true, status: 200, async json() { return { error: "FAIL", error_description: "rows fail" }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { error: "FAIL", error_description: "rows fail" };
+        },
+      };
     }
     if (method === "crm.timeline.comment.add") {
-      return { ok: true, status: 200, async json() { return { error: "FAIL", error_description: "comment fail" }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { error: "FAIL", error_description: "comment fail" };
+        },
+      };
     }
-    return { ok: true, status: 200, async json() { return { result: true }; } };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { result: true };
+      },
+    };
   };
 
   assert.equal(await updateLead(domain, 1001, { A: 1 }), null);

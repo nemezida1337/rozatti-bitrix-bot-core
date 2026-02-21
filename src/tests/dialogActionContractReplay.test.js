@@ -267,6 +267,13 @@ test("dialog action contract replay: merged/high-confidence cases", async () => 
   const rows = Array.isArray(loaded) ? loaded : [];
   const maxCases = toPositiveInt(process.env.DIALOG_REPLAY_MAX_CASES, rows.length);
   const checked = rows.slice(0, maxCases);
+  const minCases = toPositiveInt(process.env.DIALOG_REPLAY_MIN_CASES, 0);
+  if (minCases > 0) {
+    assert.ok(
+      checked.length >= minCases,
+      `Недостаточно кейсов для replay: got=${checked.length}, required=${minCases}`,
+    );
+  }
 
   const mismatches = [];
   const byKind = {};

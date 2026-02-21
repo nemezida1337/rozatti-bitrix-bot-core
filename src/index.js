@@ -2,11 +2,11 @@ import "./core/env.js";
 import { buildServer } from "./core/app.js";
 import { createGracefulShutdown } from "./core/gracefulShutdown.js";
 import { logger } from "./core/logger.js";
-import { loadStore } from "./core/store.js";
+import { loadStoreAsync } from "./core/store.js";
 import { ensureBotRegistered } from "./modules/bot/register.js";
 
 async function refreshKnownPortalBots() {
-  const store = loadStore();
+  const store = await loadStoreAsync();
   /**
    * @param {string} domain
    * @param {Record<string, any>} portal

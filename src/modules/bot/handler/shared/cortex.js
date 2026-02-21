@@ -1,8 +1,13 @@
 // src/modules/bot/handler/shared/cortex.js
 
+import {
+  resolveCortexAction,
+  resolveCortexIntent,
+  resolveCortexStage,
+} from "../../../../core/cortexContract.js";
 import { logger } from "../../../../core/logger.js";
 import { safeUpdateLeadAndContact } from "../../../crm/leads.js";
-import { saveSession } from "../../sessionStore.js";
+import { saveSessionAsync } from "../../sessionStore.js";
 
 import { applyLlmToSession } from "./session.js";
 
@@ -13,7 +18,14 @@ export function mapCortexResultToLlmResponse(cortex) {
 
   const payload = cortex?.result || {};
   const rootStage = cortex?.stage;
-  const stage = payload.stage || rootStage || "NEW";
+  const stageProbe = resolveCortexStage(payload.stage ?? rootStage, { fallback: "NEW" });
+  if (!stageProbe.isKnown && !stageProbe.isEmpty) {
+    logger.warn(
+      { ctx, stage: stageProbe.input },
+      "Unknown Cortex stage received, keeping current session stage",
+    );
+  }
+  const stage = stageProbe.isKnown || stageProbe.isEmpty ? stageProbe.value : null;
 
   const offers = Array.isArray(payload.offers) ? payload.offers : [];
 
@@ -35,9 +47,7 @@ export function mapCortexResultToLlmResponse(cortex) {
     .filter((x) => x !== null);
 
   const offerIds = new Set(
-    (offers || [])
-      .map((o) => Number(o?.id))
-      .filter((n) => Number.isFinite(n)),
+    (offers || []).map((o) => Number(o?.id)).filter((n) => Number.isFinite(n)),
   );
 
   const validChosen = normalizedChosen.filter((id) => offerIds.has(id));
@@ -46,8 +56,25 @@ export function mapCortexResultToLlmResponse(cortex) {
   if (validChosen.length === 1) chosenFinal = validChosen[0];
   else if (validChosen.length > 1) chosenFinal = validChosen;
 
-  const rawIntent = typeof payload.intent === "string" ? payload.intent.trim().toUpperCase() : "";
-  const intent = rawIntent || null;
+  const actionProbe = resolveCortexAction(payload.action, {
+    fallback: "reply",
+    allowEmpty: true,
+  });
+  if (!actionProbe.isKnown && !actionProbe.isEmpty) {
+    logger.warn(
+      { ctx, action: actionProbe.input, fallback: actionProbe.value },
+      "Unknown Cortex action received, fallback applied",
+    );
+  }
+
+  const intentProbe = resolveCortexIntent(payload.intent);
+  if (!intentProbe.isKnown && !intentProbe.isEmpty) {
+    logger.warn(
+      { ctx, intent: intentProbe.input },
+      "Unknown Cortex intent received, dropped from contract payload",
+    );
+  }
+  const intent = intentProbe.value;
 
   let confidence = null;
   if (payload.confidence != null) {
@@ -65,7 +92,7 @@ export function mapCortexResultToLlmResponse(cortex) {
       : null;
 
   const mapped = {
-    action: payload.action ?? null,
+    action: actionProbe.value,
     stage,
     reply: payload.reply || "",
     intent,
@@ -112,7 +139,7 @@ export async function processCortexResult(portalDomain, dialogId, session, corte
     });
 
     applyLlmToSession(session, llm);
-    saveSession(portalDomain, dialogId, session);
+    await saveSessionAsync(portalDomain, dialogId, session);
 
     return {
       reply: llm.reply,

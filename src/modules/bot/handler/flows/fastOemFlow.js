@@ -8,7 +8,7 @@ import { logger } from "../../../../core/logger.js";
 import { safeUpdateLeadAndContact } from "../../../crm/leads.js";
 import { abcpLookupFromText } from "../../../external/pricing/abcp.js";
 import { detectOemsFromText, isSimpleOemQuery } from "../../oemDetector.js";
-import { saveSession } from "../../sessionStore.js";
+import { saveSessionAsync } from "../../sessionStore.js";
 import { sendChatReplyIfAllowed } from "../shared/chatReply.js";
 import { mapCortexResultToLlmResponse } from "../shared/cortex.js";
 import { appendSessionHistoryTurn } from "../shared/historyContext.js";
@@ -85,15 +85,13 @@ export async function runFastOemFlow({
       "Не получилось автоматически подобрать варианты, передаю ваш запрос менеджеру.",
       "fast_oem_error",
     );
-    saveSession(portalDomain, dialogId, session);
+    await saveSessionAsync(portalDomain, dialogId, session);
     return true;
   }
 
   // ✅ берём offers из сессии, если они уже были (обычно нет на первом сообщении, но полезно на ретраях)
   const sessionOffers =
-    session?.state?.offers &&
-    Array.isArray(session.state.offers) &&
-    session.state.offers.length > 0
+    session?.state?.offers && Array.isArray(session.state.offers) && session.state.offers.length > 0
       ? session.state.offers
       : null;
 
@@ -120,7 +118,7 @@ export async function runFastOemFlow({
       "Сервис временно недоступен, подключаю менеджера для помощи.",
       "fast_oem_cortex_fallback",
     );
-    saveSession(portalDomain, dialogId, session);
+    await saveSessionAsync(portalDomain, dialogId, session);
     return true;
   }
 
@@ -144,7 +142,7 @@ export async function runFastOemFlow({
   applyLlmToSession(session, llm);
   // ✅ важно: бот сам записал OEM в лид — синхронизируем, чтобы не было ложного manager-trigger
   if (detectedOems[0]) session.lastSeenLeadOem = String(detectedOems[0]).trim();
-  saveSession(portalDomain, dialogId, session);
+  await saveSessionAsync(portalDomain, dialogId, session);
 
   await sendBotReply(llm.reply || "…", "fast_oem_reply");
 

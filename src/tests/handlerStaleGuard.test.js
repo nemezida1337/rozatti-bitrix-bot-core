@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { processIncomingBitrixMessage } from "../modules/bot/handler/index.js";
-import { getSession, saveSession } from "../modules/bot/sessionStore.js";
+import { getSession, saveSession } from "../modules/bot/sessionStore.legacy.js";
 
 function makeBody({ domain, dialogId, chatId, messageId, message }) {
   return {
@@ -95,4 +95,3 @@ test("handler stale-guard: updates tracking for newer messageId", async () => {
   assert.equal(typeof session.lastProcessedAt, "number");
   assert.equal(session.lastProcessedAt > 111, true);
 });
-

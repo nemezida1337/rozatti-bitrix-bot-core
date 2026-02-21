@@ -83,6 +83,25 @@ test("cortex shared: mapCortexResultToLlmResponse falls back to defaults", () =>
   assert.equal(mapped.contact_update, null);
 });
 
+test("cortex shared: unknown stage/action are sanitized by contract", () => {
+  const mapped = mapCortexResultToLlmResponse({
+    result: {
+      stage: "NOT_A_STAGE",
+      action: "custom_action",
+      intent: "custom_intent",
+      reply: "ok",
+    },
+  });
+
+  // Неизвестную stage не принимаем: оставляем без перехода (null).
+  assert.equal(mapped.stage, null);
+  // Неизвестный action приводим к безопасному reply.
+  assert.equal(mapped.action, "reply");
+  // Неизвестный intent удаляем из контракта.
+  assert.equal(mapped.intent, null);
+  assert.equal(mapped.reply, "ok");
+});
+
 test("cortex shared: processCortexResult returns mapped response on success", async () => {
   const session = {
     state: { stage: "NEW", offers: [] },

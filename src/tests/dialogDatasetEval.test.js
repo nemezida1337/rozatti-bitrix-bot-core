@@ -353,6 +353,13 @@ test("dialog dataset eval: high-confidence cases", async (t) => {
     t.skip("В high_confidence_cases.json нет кейсов для проверки");
     return;
   }
+  const minCases = toPositiveInt(process.env.DIALOG_EVAL_MIN_CASES, 0);
+  if (minCases > 0) {
+    assert.ok(
+      sampled.length >= minCases,
+      `Недостаточно кейсов для eval: got=${sampled.length}, required=${minCases}`,
+    );
+  }
 
   const results = [];
   const mismatches = [];

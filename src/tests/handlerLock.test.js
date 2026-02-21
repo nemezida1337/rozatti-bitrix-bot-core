@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import test from "node:test";
 
-import { upsertPortal } from "../core/store.js";
+import { upsertPortal } from "../core/store.legacy.js";
 import { processIncomingBitrixMessage } from "../modules/bot/handler/index.js";
-import { getSession, saveSession } from "../modules/bot/sessionStore.js";
+import { getSession, saveSession } from "../modules/bot/sessionStore.legacy.js";
 
 process.env.TOKENS_FILE = "./data/portals.handlerLock.test.json";
 

@@ -1,6 +1,6 @@
 // @ts-check
 
-import fs from "fs";
+import fsp from "node:fs/promises";
 import path from "path";
 
 import { logger } from "./logger.js";
@@ -77,73 +77,140 @@ function getFilePath() {
   return path.resolve(process.cwd(), tokensFile);
 }
 
-/** @returns {PortalStore} */
-export function loadStore() {
-  const filePath = getFilePath();
+function getAsyncStoreCacheTtlMs() {
+  const n = Number(process.env.STORE_CACHE_TTL_MS || 1500);
+  if (!Number.isFinite(n) || n < 0) return 1500;
+  return Math.trunc(n);
+}
+
+function cloneStore(store) {
+  const src = store && typeof store === "object" ? store : {};
+  if (typeof globalThis.structuredClone === "function") {
+    return globalThis.structuredClone(src);
+  }
+  return JSON.parse(JSON.stringify(src));
+}
+
+/** @type {{ filePath: string|null, loadedAt: number, store: PortalStore|null, pending: Promise<PortalStore>|null }} */
+const asyncStoreCache = {
+  filePath: null,
+  loadedAt: 0,
+  store: null,
+  pending: null,
+};
+
+function setAsyncStoreCache(filePath, store) {
+  asyncStoreCache.filePath = filePath;
+  asyncStoreCache.loadedAt = Date.now();
+  asyncStoreCache.store = cloneStore(store);
+  asyncStoreCache.pending = null;
+}
+
+function resetAsyncStoreCache(filePath = null) {
+  if (filePath && asyncStoreCache.filePath && asyncStoreCache.filePath !== filePath) return;
+  asyncStoreCache.filePath = filePath;
+  asyncStoreCache.loadedAt = 0;
+  asyncStoreCache.store = null;
+  asyncStoreCache.pending = null;
+}
+
+async function ensureDirAsync(dir) {
+  await fsp.mkdir(dir, { recursive: true });
+}
+
+async function safeRenameAsync(tmpPath, filePath) {
   try {
-    if (!fs.existsSync(filePath)) return {};
-    const raw = /** @type {PortalStore} */ (JSON.parse(fs.readFileSync(filePath, "utf8")));
-    return normalizeStore(raw);
+    await fsp.rename(tmpPath, filePath);
   } catch (e) {
-    logger.error({ e }, "Failed to load token store");
-    return {};
+    const err = /** @type {{ code?: string }} */ (e);
+    if (err && (err.code === "EEXIST" || err.code === "EPERM" || err.code === "EBUSY")) {
+      await fsp.rm(filePath, { force: true });
+      await fsp.rename(tmpPath, filePath);
+      return;
+    }
+    throw e;
+  }
+}
+
+/** @returns {Promise<PortalStore>} */
+export async function loadStoreAsync() {
+  const filePath = getFilePath();
+
+  const ttlMs = getAsyncStoreCacheTtlMs();
+  const cachedIsFresh =
+    asyncStoreCache.filePath === filePath &&
+    !!asyncStoreCache.store &&
+    Date.now() - asyncStoreCache.loadedAt <= ttlMs;
+  if (cachedIsFresh) return cloneStore(asyncStoreCache.store);
+
+  if (asyncStoreCache.filePath === filePath && asyncStoreCache.pending) {
+    const shared = await asyncStoreCache.pending;
+    return cloneStore(shared);
+  }
+
+  const pendingLoad = (async () => {
+    try {
+      const rawText = await fsp.readFile(filePath, "utf8");
+      const raw = /** @type {PortalStore} */ (JSON.parse(rawText));
+      const normalized = normalizeStore(raw);
+      setAsyncStoreCache(filePath, normalized);
+      return normalized;
+    } catch (e) {
+      const err = /** @type {{ code?: string }} */ (e);
+      if (err?.code === "ENOENT") {
+        setAsyncStoreCache(filePath, {});
+        return {};
+      }
+      logger.error({ e }, "Failed to load token store");
+      setAsyncStoreCache(filePath, {});
+      return {};
+    }
+  })();
+
+  asyncStoreCache.filePath = filePath;
+  asyncStoreCache.pending = pendingLoad;
+
+  try {
+    const loaded = await pendingLoad;
+    return cloneStore(loaded);
+  } finally {
+    if (asyncStoreCache.pending === pendingLoad) {
+      asyncStoreCache.pending = null;
+    }
   }
 }
 
 /** @param {PortalStore} obj */
-export function saveStore(obj) {
+export async function saveStoreAsync(obj) {
   const filePath = getFilePath();
+  const dir = path.dirname(filePath);
+  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
+  const normalized = normalizeStore(obj);
   try {
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-    // Атомарная запись: пишем во временный файл и затем делаем rename.
-    const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
-    const json = JSON.stringify(normalizeStore(obj), null, 2);
-
-    fs.writeFileSync(tmpPath, json, "utf8");
-
-    try {
-      fs.renameSync(tmpPath, filePath);
-    } catch (e) {
-      const err = /** @type {{ code?: string }} */ (e);
-      // На некоторых системах rename поверх существующего файла может падать.
-      // Фоллбек: удаляем старый файл и повторяем rename.
-      if (
-        err &&
-        (err.code === "EEXIST" || err.code === "EPERM" || err.code === "EBUSY")
-      ) {
-        try {
-          fs.rmSync(filePath, { force: true });
-          fs.renameSync(tmpPath, filePath);
-        } catch (e2) {
-          throw e2;
-        }
-      } else {
-        throw e;
-      }
-    } finally {
-      // Если что-то пошло не так — подчистим временный файл.
-      if (fs.existsSync(tmpPath)) {
-        try {
-          fs.rmSync(tmpPath, { force: true });
-        } catch {
-          // ignore cleanup error
-        }
-      }
-    }
+    await ensureDirAsync(dir);
+    const json = JSON.stringify(normalized, null, 2);
+    await fsp.writeFile(tmpPath, json, "utf8");
+    await safeRenameAsync(tmpPath, filePath);
+    setAsyncStoreCache(filePath, normalized);
   } catch (e) {
     logger.error({ e }, "Failed to save token store");
+    resetAsyncStoreCache(filePath);
+  } finally {
+    try {
+      await fsp.rm(tmpPath, { force: true });
+    } catch {
+      // ignore cleanup error
+    }
   }
 }
 
 /**
  * @param {string} domain
  * @param {PortalRecord} data
- * @returns {PortalRecord}
+ * @returns {Promise<PortalRecord>}
  */
-export function upsertPortal(domain, data) {
-  const store = loadStore();
+export async function upsertPortalAsync(domain, data) {
+  const store = await loadStoreAsync();
   store[domain] = normalizePortalRecord(
     {
       ...(store[domain] || {}),
@@ -153,17 +220,25 @@ export function upsertPortal(domain, data) {
     },
     domain,
   );
-  saveStore(store);
+  await saveStoreAsync(store);
   return store[domain];
 }
 
 /**
  * @param {string} domain
- * @returns {PortalRecord|undefined}
+ * @returns {Promise<PortalRecord|undefined>}
  */
-export function getPortal(domain) {
-  const store = loadStore();
+export async function getPortalAsync(domain) {
+  const store = await loadStoreAsync();
   const portal = store[domain];
   if (!portal) return undefined;
   return normalizePortalRecord(portal, domain);
 }
+
+export {
+  getFilePath as __storeGetFilePath,
+  normalizePortalRecord as __storeNormalizePortalRecord,
+  normalizeStore as __storeNormalizeStore,
+  resetAsyncStoreCache as __storeResetAsyncStoreCache,
+  setAsyncStoreCache as __storeSetAsyncStoreCache,
+};

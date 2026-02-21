@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { makeBitrixClient } from "../core/bitrixClient.js";
-import { upsertPortal } from "../core/store.js";
+import { upsertPortal } from "../core/store.legacy.js";
 
 const TOKENS_FILE = "./data/portals.bitrixClient.test.json";
 process.env.TOKENS_FILE = TOKENS_FILE;
@@ -15,6 +15,7 @@ const originalEnv = {
   BITRIX_CLIENT_ID: process.env.BITRIX_CLIENT_ID,
   BITRIX_CLIENT_SECRET: process.env.BITRIX_CLIENT_SECRET,
   BITRIX_OAUTH_URL: process.env.BITRIX_OAUTH_URL,
+  BITRIX_DEBUG_PROFILE: process.env.BITRIX_DEBUG_PROFILE,
 };
 
 function resetStore() {
@@ -31,6 +32,9 @@ function restoreEnv() {
 
   if (originalEnv.BITRIX_OAUTH_URL === undefined) delete process.env.BITRIX_OAUTH_URL;
   else process.env.BITRIX_OAUTH_URL = originalEnv.BITRIX_OAUTH_URL;
+
+  if (originalEnv.BITRIX_DEBUG_PROFILE === undefined) delete process.env.BITRIX_DEBUG_PROFILE;
+  else process.env.BITRIX_DEBUG_PROFILE = originalEnv.BITRIX_DEBUG_PROFILE;
 }
 
 test.beforeEach(() => {
@@ -45,7 +49,78 @@ test.after(() => {
 });
 
 test("bitrixClient: requires domain", () => {
-  assert.throws(() => makeBitrixClient({ baseUrl: "https://example.test/rest" }), /domain is required/);
+  assert.throws(
+    () => makeBitrixClient({ baseUrl: "https://example.test/rest" }),
+    /domain is required/,
+  );
+});
+
+test("bitrixClient: does not call profile probe unless BITRIX_DEBUG_PROFILE is enabled", async () => {
+  const domain = "bitrix-client-no-profile-probe.bitrix24.ru";
+  upsertPortal(domain, {
+    domain,
+    baseUrl: "https://example.test/rest",
+    accessToken: "token-1",
+    refreshToken: "refresh-1",
+  });
+  delete process.env.BITRIX_DEBUG_PROFILE;
+
+  const methods = [];
+  globalThis.fetch = async (url) => {
+    const parsedMethod = String(url).match(/\/rest\/(.+)\.json/i)?.[1] || "unknown";
+    methods.push(parsedMethod);
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { result: { ok: true } };
+      },
+    };
+  };
+
+  const client = makeBitrixClient({
+    domain,
+    baseUrl: "https://example.test/rest",
+    accessToken: "token-1",
+  });
+  const result = await client.call("crm.lead.get", { id: 1 });
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(methods, ["crm.lead.get"]);
+});
+
+test("bitrixClient: calls profile probe once when BITRIX_DEBUG_PROFILE=1", async () => {
+  const domain = "bitrix-client-profile-probe-enabled.bitrix24.ru";
+  upsertPortal(domain, {
+    domain,
+    baseUrl: "https://example.test/rest",
+    accessToken: "token-1",
+    refreshToken: "refresh-1",
+  });
+  process.env.BITRIX_DEBUG_PROFILE = "1";
+
+  const methods = [];
+  globalThis.fetch = async (url) => {
+    const parsedMethod = String(url).match(/\/rest\/(.+)\.json/i)?.[1] || "unknown";
+    methods.push(parsedMethod);
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          result: { ok: true, ID: "1", NAME: "Bot", LAST_NAME: "User", EMAIL: "bot@example.test" },
+        };
+      },
+    };
+  };
+
+  const client = makeBitrixClient({
+    domain,
+    baseUrl: "https://example.test/rest",
+    accessToken: "token-1",
+  });
+  const result = await client.call("crm.lead.get", { id: 1 });
+  assert.equal(result?.ok, true);
+  assert.deepEqual(methods, ["profile", "crm.lead.get"]);
 });
 
 test("bitrixClient: retries TOO_MANY_REQUESTS and then succeeds", async () => {
@@ -78,7 +153,11 @@ test("bitrixClient: retries TOO_MANY_REQUESTS and then succeeds", async () => {
     };
   };
 
-  const client = makeBitrixClient({ domain, baseUrl: "https://example.test/rest", accessToken: "token-1" });
+  const client = makeBitrixClient({
+    domain,
+    baseUrl: "https://example.test/rest",
+    accessToken: "token-1",
+  });
   const result = await client.call("profile");
   assert.deepEqual(result, { ok: true });
   assert.equal(calls, 3);
@@ -136,7 +215,11 @@ test("bitrixClient: refreshes token on expired_token and retries request", async
     };
   };
 
-  const client = makeBitrixClient({ domain, baseUrl: "https://example.test/rest", accessToken: "old-token" });
+  const client = makeBitrixClient({
+    domain,
+    baseUrl: "https://example.test/rest",
+    accessToken: "old-token",
+  });
   const result = await client.call("profile", { a: 1 });
   assert.deepEqual(result, { ok: true });
   assert.deepEqual(seenAuth, ["old-token", "new-token"]);
@@ -175,7 +258,11 @@ test("bitrixClient: throws wrapped error when refresh fails after expired_token"
     };
   };
 
-  const client = makeBitrixClient({ domain, baseUrl: "https://example.test/rest", accessToken: "old-token" });
+  const client = makeBitrixClient({
+    domain,
+    baseUrl: "https://example.test/rest",
+    accessToken: "old-token",
+  });
   await assert.rejects(
     () => client.call("profile"),
     (err) =>
@@ -183,4 +270,3 @@ test("bitrixClient: throws wrapped error when refresh fails after expired_token"
       err.code === "expired_token",
   );
 });
-

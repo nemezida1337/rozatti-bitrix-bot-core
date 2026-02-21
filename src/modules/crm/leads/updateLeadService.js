@@ -3,13 +3,13 @@
 
 import { makeBitrixClient } from "../../../core/bitrixClient.js";
 import { logger } from "../../../core/logger.js";
-import { getPortal } from "../../../core/store.js";
+import { getPortalAsync } from "../../../core/store.js";
 
 const CTX = "crm/updateLeadService";
 
 // Получаем REST-клиент Bitrix
-function bx(portal) {
-  const portalCfg = getPortal(portal);
+async function bx(portal) {
+  const portalCfg = await getPortalAsync(portal);
   if (!portalCfg) {
     logger.error({ ctx: CTX, portal }, "Portal not found in store");
     return null;
@@ -27,7 +27,7 @@ function bx(portal) {
 // -----------------------------------------------------------
 export async function updateLead(portal, leadId, fields = {}) {
   try {
-    const client = bx(portal);
+    const client = await bx(portal);
     if (!client) return null;
 
     if (!leadId) {
@@ -48,10 +48,7 @@ export async function updateLead(portal, leadId, fields = {}) {
     logger.info({ ctx: CTX, leadId, fields }, "Лид обновлён");
     return res;
   } catch (err) {
-    logger.error(
-      { ctx: CTX, leadId, fields, error: String(err) },
-      "Ошибка crm.lead.update",
-    );
+    logger.error({ ctx: CTX, leadId, fields, error: String(err) }, "Ошибка crm.lead.update");
     return null;
   }
 }
@@ -63,7 +60,7 @@ export async function addLeadComment(portal, leadId, text) {
   try {
     if (!leadId || !text) return;
 
-    const client = bx(portal);
+    const client = await bx(portal);
     if (!client) return;
 
     await client.call("crm.timeline.comment.add", {
@@ -76,10 +73,7 @@ export async function addLeadComment(portal, leadId, text) {
 
     logger.info({ ctx: CTX, leadId, text }, "Комментарий добавлен");
   } catch (err) {
-    logger.error(
-      { ctx: CTX, leadId, text, error: String(err) },
-      "Ошибка timeline.comment.add",
-    );
+    logger.error({ ctx: CTX, leadId, text, error: String(err) }, "Ошибка timeline.comment.add");
   }
 }
 
@@ -88,7 +82,7 @@ export async function addLeadComment(portal, leadId, text) {
 // -----------------------------------------------------------
 export async function setLeadProductRows(portal, leadId, rows = []) {
   try {
-    const client = bx(portal);
+    const client = await bx(portal);
     if (!client) return null;
 
     if (!leadId) {
@@ -103,11 +97,7 @@ export async function setLeadProductRows(portal, leadId, rows = []) {
 
     // 🛡️ Минимальная валидация строк
     const validRows = rows.filter(
-      (r) =>
-        r &&
-        typeof r === "object" &&
-        r.PRODUCT_NAME &&
-        typeof r.PRICE === "number",
+      (r) => r && typeof r === "object" && r.PRODUCT_NAME && typeof r.PRICE === "number",
     );
 
     if (!validRows.length) {
@@ -125,17 +115,11 @@ export async function setLeadProductRows(portal, leadId, rows = []) {
 
     const res = await client.call("crm.lead.productrows.set", payload);
 
-    logger.info(
-      { ctx: CTX, leadId, rows: validRows },
-      "Товарные строки успешно записаны в лид",
-    );
+    logger.info({ ctx: CTX, leadId, rows: validRows }, "Товарные строки успешно записаны в лид");
 
     return res;
   } catch (err) {
-    logger.error(
-      { ctx: CTX, leadId, rows, error: String(err) },
-      "Ошибка crm.lead.productrows.set",
-    );
+    logger.error({ ctx: CTX, leadId, rows, error: String(err) }, "Ошибка crm.lead.productrows.set");
     return null;
   }
 }

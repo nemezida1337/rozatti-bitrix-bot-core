@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import { makeBitrixClient } from "../core/bitrixClient.js";
 import { logger } from "../core/logger.js";
-import { getPortal, loadStore } from "../core/store.js";
+import { getPortal, loadStore } from "../core/store.legacy.js";
 import { resolveSmallTalk } from "../modules/bot/handler/shared/smallTalk.js";
 import { detectOemsFromText } from "../modules/bot/oemDetector.js";
 
@@ -197,14 +197,7 @@ function extractChatIds(chatRowsRaw) {
   return Array.from(new Set(ids));
 }
 
-async function callBitrixSafe({
-  api,
-  limiter,
-  method,
-  params,
-  errors,
-  ctx = {},
-}) {
+async function callBitrixSafe({ api, limiter, method, params, errors, ctx = {} }) {
   await limiter();
   try {
     return await api.call(method, params);
@@ -263,11 +256,7 @@ async function listCrmEntities({
       ctx: { entityType, stage: "list_entities", start },
     });
 
-    const list = Array.isArray(chunk)
-      ? chunk
-      : Array.isArray(chunk?.items)
-        ? chunk.items
-        : [];
+    const list = Array.isArray(chunk) ? chunk : Array.isArray(chunk?.items) ? chunk.items : [];
 
     if (!list.length) break;
     rows.push(...list);
@@ -282,13 +271,7 @@ async function listCrmEntities({
   return rows;
 }
 
-async function fetchChatHistory({
-  api,
-  limiter,
-  errors,
-  chatId,
-  maxFallbackPages = 25,
-}) {
+async function fetchChatHistory({ api, limiter, errors, chatId, maxFallbackPages = 25 }) {
   const openlinesPayload = await callBitrixSafe({
     api,
     limiter,
@@ -337,9 +320,7 @@ async function fetchChatHistory({
     allMessages.push(...messages);
     if (messages.length < 200) break;
 
-    const ids = messages
-      .map((m) => toInt(m?.id ?? m?.ID))
-      .filter((x) => x && x > 0);
+    const ids = messages.map((m) => toInt(m?.id ?? m?.ID)).filter((x) => x && x > 0);
     if (!ids.length) break;
     const oldest = Math.min(...ids);
     if (!oldest || oldest === prevOldest) break;
@@ -368,23 +349,21 @@ function normalizeTurn({
   usersMap,
 }) {
   const messageId = String(message?.id ?? message?.ID ?? "").trim() || null;
-  const authorId = String(
-    message?.senderid ?? message?.senderId ?? message?.author_id ?? message?.AUTHOR_ID ?? "",
-  ).trim() || null;
+  const authorId =
+    String(
+      message?.senderid ?? message?.senderId ?? message?.author_id ?? message?.AUTHOR_ID ?? "",
+    ).trim() || null;
 
   const user = authorId ? usersMap[String(authorId)] || null : null;
   const authorType = classifyAuthor(authorId, user);
 
   const text = String(message?.text ?? message?.TEXT ?? "").trim();
   const textMasked = redactText(text);
-  const date =
-    String(message?.date ?? message?.DATE ?? "").trim() ||
-    null;
+  const date = String(message?.date ?? message?.DATE ?? "").trim() || null;
 
   const detectedOems = authorType === "client" ? detectOemsFromText(text) : [];
   const smallTalk = authorType === "client" && text ? resolveSmallTalk(text) : null;
-  const isVinLike =
-    /(?:\bVIN\b|\bВИН\b)/i.test(text) || /[A-HJ-NPR-Z0-9]{17}/i.test(text);
+  const isVinLike = /(?:\bVIN\b|\bВИН\b)/i.test(text) || /[A-HJ-NPR-Z0-9]{17}/i.test(text);
 
   return {
     domain,
@@ -414,16 +393,14 @@ function normalizeTurn({
 }
 
 function sortMessages(messages = []) {
-  return messages
-    .slice()
-    .sort((a, b) => {
-      const da = new Date(String(a?.date ?? a?.DATE ?? "")).getTime() || 0;
-      const db = new Date(String(b?.date ?? b?.DATE ?? "")).getTime() || 0;
-      if (da !== db) return da - db;
-      const ia = toInt(a?.id ?? a?.ID) || 0;
-      const ib = toInt(b?.id ?? b?.ID) || 0;
-      return ia - ib;
-    });
+  return messages.slice().sort((a, b) => {
+    const da = new Date(String(a?.date ?? a?.DATE ?? "")).getTime() || 0;
+    const db = new Date(String(b?.date ?? b?.DATE ?? "")).getTime() || 0;
+    if (da !== db) return da - db;
+    const ia = toInt(a?.id ?? a?.ID) || 0;
+    const ib = toInt(b?.id ?? b?.ID) || 0;
+    return ia - ib;
+  });
 }
 
 async function main() {
@@ -451,10 +428,9 @@ async function main() {
   });
 
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
-  const outRoot =
-    args.out_dir
-      ? path.resolve(process.cwd(), String(args.out_dir))
-      : path.join(ROOT, "data", "tmp", "bitrix-dialogs", ts);
+  const outRoot = args.out_dir
+    ? path.resolve(process.cwd(), String(args.out_dir))
+    : path.join(ROOT, "data", "tmp", "bitrix-dialogs", ts);
   const rawDir = path.join(outRoot, "raw");
   const normalizedDir = path.join(outRoot, "normalized");
   await fs.mkdir(rawDir, { recursive: true });

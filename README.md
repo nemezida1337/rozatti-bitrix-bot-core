@@ -118,7 +118,13 @@ BITRIX_CLIENT_ID=local.xxxxx
 BITRIX_CLIENT_SECRET=xxxxxxxx
 BITRIX_OAUTH_URL=https://oauth.bitrix.info/oauth/token/
 BITRIX_OAUTH_REDIRECT=${BASE_URL}/oauth/callback
+BITRIX_DEBUG_PROFILE=0
 TOKENS_FILE=./data/portals.json
+SESSION_CACHE_TTL_MS=3000
+STORE_CACHE_TTL_MS=1500
+REDIS_URL=redis://127.0.0.1:6379
+REDIS_KEY_PREFIX=bitrixbot
+REDIS_ENABLED=1
 
 LOG_LEVEL=info
 LOG_DIR=./logs
@@ -132,18 +138,24 @@ HF_CORTEX_ENABLED=true
 HF_CORTEX_URL=http://127.0.0.1:9000/api/hf-cortex/lead_sales
 HF_CORTEX_TIMEOUT_MS=20000
 HF_CORTEX_API_KEY=change-me
+BOT_DIALOG_LOCK_TTL_MS=45000
+BOT_DIALOG_LOCK_WAIT_MS=45000
+BOT_DIALOG_LOCK_POLL_MS=120
 
 # ABCP
 ABCP_DOMAIN=abcpXXXX.public.api.abcp.ru
 ABCP_USERLOGIN=api@abcpXXXX
 ABCP_USERPSW_MD5=<md5>
 ABCP_KEY=api@abcpXXXX
+ABCP_ORDER_LOCK_TTL_MS=45000
+ABCP_ORDER_LOCK_WAIT_MS=45000
+ABCP_ORDER_LOCK_POLL_MS=120
 ```
 
 Минимальные отличия профилей:
 
 - `.env.prod`: `LOG_LEVEL=info`, `EVENT_DUMP=0`, `HF_CORTEX_DUMP=0`
-- `.env.debug`: `LOG_LEVEL=debug`, `EVENT_DUMP=1`, `HF_CORTEX_DUMP=1`, `BITRIX_ALLOW_ONIMMESSAGEADD=1`
+- `.env.debug`: `LOG_LEVEL=debug`, `EVENT_DUMP=1`, `HF_CORTEX_DUMP=1`, `BITRIX_ALLOW_ONIMMESSAGEADD=1`, `BITRIX_DEBUG_PROFILE=1`
 
 ## Конфигурация `hf_cortex_py`
 
@@ -233,6 +245,13 @@ Node:
 
 ```bash
 npm test
+```
+
+Для quality-gate replay/eval можно задать минимальный размер датасета:
+
+```bash
+DIALOG_EVAL_MIN_CASES=300 node --test src/tests/dialogDatasetEval.test.js
+DIALOG_REPLAY_MIN_CASES=300 node --test src/tests/dialogActionContractReplay.test.js
 ```
 
 Python:

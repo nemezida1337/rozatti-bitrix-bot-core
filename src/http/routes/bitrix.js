@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { logger } from "../../core/logger.js";
-import { upsertPortal, getPortal } from "../../core/store.js";
+import { getPortalAsync, upsertPortalAsync } from "../../core/store.js";
 import {
   handleOnImBotMessageAdd,
   ensureBotRegistered,
@@ -28,11 +28,7 @@ function isOnImMessageAddAllowed() {
 function isInstallEvent(event) {
   if (!event) return false;
   const e = String(event).toLowerCase();
-  return (
-    e === "onappinstall" ||
-    e === "onappinstalled" ||
-    e === "onappinstalltest"
-  );
+  return e === "onappinstall" || e === "onappinstalled" || e === "onappinstalltest";
 }
 
 /** @param {AnyRecord} [body] */
@@ -61,12 +57,7 @@ function extractAuth(body = {}) {
 /** @param {AnyRecord} [auth] */
 function extractApplicationToken(auth = {}) {
   if (!auth) return null;
-  return (
-    auth.application_token ||
-    auth.APPLICATION_TOKEN ||
-    auth.applicationToken ||
-    null
-  );
+  return auth.application_token || auth.APPLICATION_TOKEN || auth.applicationToken || null;
 }
 
 /** @param {AnyRecord} [auth] */
@@ -146,10 +137,7 @@ function maskPhonesAndEmails(s) {
   let text = s;
 
   // emails
-  text = text.replace(
-    /([A-Z0-9._%+-]{1,3})[A-Z0-9._%+-]*(@[A-Z0-9.-]+\.[A-Z]{2,})/gi,
-    "$1***$2"
-  );
+  text = text.replace(/([A-Z0-9._%+-]{1,3})[A-Z0-9._%+-]*(@[A-Z0-9.-]+\.[A-Z]{2,})/gi, "$1***$2");
 
   // phone-like sequences: +7 999 123-45-67 etc
   text = text.replace(/(\+?\d[\d\s().-]{6,}\d)/g, (m) => {
@@ -247,10 +235,7 @@ export async function registerRoutes(app) {
     if (!validateEventsSecret(req, reply, event)) return;
 
     // базовый лог входящего события
-    logger.info(
-      { event, keys: Object.keys(body || {}) },
-      "Incoming event"
-    );
+    logger.info({ event, keys: Object.keys(body || {}) }, "Incoming event");
 
     const domain = extractDomain(body);
     await dumpBitrixEventToFile({ event, domain, body });
@@ -259,16 +244,13 @@ export async function registerRoutes(app) {
       // === УСТАНОВКА / ПЕРЕУСТАНОВКА ПРИЛОЖЕНИЯ ===
       if (isInstallEvent(event)) {
         if (!domain) {
-          logger.error(
-            { event, bodyKeys: Object.keys(body || {}) },
-            "ONAPPINSTALL without domain",
-          );
+          logger.error({ event, bodyKeys: Object.keys(body || {}) }, "ONAPPINSTALL without domain");
           return reply.code(400).send({ error: "DOMAIN_REQUIRED" });
         }
 
         // onappinstall: сохраняем токены/endpoint в нормализованном виде
         const norm = normalizeBitrixAuth(extractAuth(body) || {});
-        await upsertPortal(domain, norm);
+        await upsertPortalAsync(domain, norm);
         logger.info({ domain }, "ONAPPINSTALL: tokens saved");
 
         try {
@@ -282,21 +264,18 @@ export async function registerRoutes(app) {
 
       // дальше — любые обычные события, без домена не работаем
       if (!domain) {
-        logger.warn(
-          { event, bodyKeys: Object.keys(body || {}) },
-          "Event without domain",
-        );
+        logger.warn({ event, bodyKeys: Object.keys(body || {}) }, "Event without domain");
         return reply.code(400).send({ error: "DOMAIN_REQUIRED" });
       }
 
-      let portal = await getPortal(domain);
+      let portal = await getPortalAsync(domain);
 
       // Если приложение не установлено/не сохранило портал-токены —
       // не пытаемся работать с auth из обычных событий (он может быть от клиента/коннектора).
       if (!portal || !(portal.accessToken || portal.access_token)) {
         logger.error(
           { domain, hasPortal: !!portal },
-          "Portal auth not found. Reinstall the app to trigger onappinstall."
+          "Portal auth not found. Reinstall the app to trigger onappinstall.",
         );
         return reply.code(412).send({ error: "PORTAL_AUTH_REQUIRED" });
       }
@@ -304,14 +283,18 @@ export async function registerRoutes(app) {
       // Если в store остались старые snake_case ключи — мигрируем в camelCase на лету.
       if (!portal.accessToken && portal.access_token) {
         const migrated = normalizeBitrixAuth(portal);
-        portal = upsertPortal(domain, migrated);
+        portal = await upsertPortalAsync(domain, migrated);
       }
 
       // Диагностика: событие может прийти с auth другого user_id (например, клиента/коннектора).
       // Мы НЕ используем этот auth для REST и НЕ перезаписываем им store.
       const incomingAuth = extractAuth(body) || {};
       const normalizedIncoming = normalizeBitrixAuth(incomingAuth);
-      if (normalizedIncoming.userId && portal.userId && normalizedIncoming.userId !== portal.userId) {
+      if (
+        normalizedIncoming.userId &&
+        portal.userId &&
+        normalizedIncoming.userId !== portal.userId
+      ) {
         logger.warn(
           { domain, portalUserId: portal.userId, incomingUserId: normalizedIncoming.userId, event },
           "Bitrix event auth user_id differs from portal install user_id. Using stored portal auth.",
@@ -330,7 +313,7 @@ export async function registerRoutes(app) {
         safeUpdate.domain = normalizedIncoming.domain;
       }
       if (Object.keys(safeUpdate).length > 0) {
-        portal = upsertPortal(domain, safeUpdate);
+        portal = await upsertPortalAsync(domain, safeUpdate);
       }
 
       // P0: (опционально) проверка application_token из события против сохраненного
@@ -371,7 +354,10 @@ export async function registerRoutes(app) {
       }
       if (event === "onimmessageadd") {
         if (!isOnImMessageAddAllowed()) {
-          logger.warn({ domain }, "onimmessageadd ignored (set BITRIX_ALLOW_ONIMMESSAGEADD=1 to enable)");
+          logger.warn(
+            { domain },
+            "onimmessageadd ignored (set BITRIX_ALLOW_ONIMMESSAGEADD=1 to enable)",
+          );
           return reply.send({ result: "noop" });
         }
         await handleOnImBotMessageAdd({ portal, body, domain });
@@ -399,7 +385,7 @@ export async function registerRoutes(app) {
     } catch (e) {
       logger.error(
         { e, event, domain, bodyKeys: Object.keys(body || {}) },
-        "Error while handling Bitrix event"
+        "Error while handling Bitrix event",
       );
       return reply.code(500).send({ error: "INTERNAL_ERROR" });
     }

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { upsertPortal } from "../core/store.js";
+import { upsertPortal } from "../core/store.legacy.js";
 import {
   finishDialog,
   sendOL,
@@ -95,13 +95,31 @@ test("openlines/api: sendOL builds payload for chat/number/custom dialog ids", a
     const method = methodFromUrl(url);
     const params = new URLSearchParams(String(opts.body || ""));
     if (method === "profile") {
-      return { ok: true, status: 200, async json() { return { result: {} }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: {} };
+        },
+      };
     }
     if (method === "imbot.message.add") {
       payloads.push(Object.fromEntries(params.entries()));
-      return { ok: true, status: 200, async json() { return { result: true }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: true };
+        },
+      };
     }
-    return { ok: true, status: 200, async json() { return { result: true }; } };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { result: true };
+      },
+    };
   };
 
   await sendOL(domain, "chat123", "msg-1");
@@ -123,7 +141,13 @@ test("openlines/api: sendOL no-op for empty message and suppresses input errors"
   let calls = 0;
   globalThis.fetch = async () => {
     calls += 1;
-    return { ok: true, status: 200, async json() { return { result: true }; } };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { result: true };
+      },
+    };
   };
 
   await sendOL(domain, "chat999", "");

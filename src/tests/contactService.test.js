@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { upsertPortal } from "../core/store.js";
+import { upsertPortal } from "../core/store.legacy.js";
 import { ensureContact } from "../modules/crm/contact/contactService.js";
 
 const TOKENS_FILE = "./data/portals.contactService.test.json";
@@ -56,15 +56,39 @@ test("contactService: updates already bound contact from lead CONTACT_ID", async
     seenMethods.push(method);
 
     if (method === "profile") {
-      return { ok: true, status: 200, async json() { return { result: {} }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: {} };
+        },
+      };
     }
     if (method === "crm.lead.get") {
-      return { ok: true, status: 200, async json() { return { result: { CONTACT_ID: "55" } }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: { CONTACT_ID: "55" } };
+        },
+      };
     }
     if (method === "crm.contact.update") {
-      return { ok: true, status: 200, async json() { return { result: true }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: true };
+        },
+      };
     }
-    return { ok: true, status: 200, async json() { return { result: true }; } };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { result: true };
+      },
+    };
   };
 
   const contactId = await ensureContact(domain, 1002, {
@@ -88,21 +112,57 @@ test("contactService: finds contact by phone, updates and binds to lead", async 
     seenMethods.push(method);
 
     if (method === "profile") {
-      return { ok: true, status: 200, async json() { return { result: {} }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: {} };
+        },
+      };
     }
     if (method === "crm.lead.get") {
-      return { ok: true, status: 200, async json() { return { result: { CONTACT_ID: "0" } }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: { CONTACT_ID: "0" } };
+        },
+      };
     }
     if (method === "crm.contact.list") {
-      return { ok: true, status: 200, async json() { return { result: [{ ID: "88" }] }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: [{ ID: "88" }] };
+        },
+      };
     }
     if (method === "crm.contact.update") {
-      return { ok: true, status: 200, async json() { return { result: true }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: true };
+        },
+      };
     }
     if (method === "crm.lead.update") {
-      return { ok: true, status: 200, async json() { return { result: true }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: true };
+        },
+      };
     }
-    return { ok: true, status: 200, async json() { return { result: true }; } };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { result: true };
+      },
+    };
   };
 
   const contactId = await ensureContact(domain, 1003, {
@@ -126,21 +186,57 @@ test("contactService: creates and binds new contact when none exists", async () 
     seenMethods.push(method);
 
     if (method === "profile") {
-      return { ok: true, status: 200, async json() { return { result: {} }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: {} };
+        },
+      };
     }
     if (method === "crm.lead.get") {
-      return { ok: true, status: 200, async json() { return { result: { CONTACT_ID: 0 } }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: { CONTACT_ID: 0 } };
+        },
+      };
     }
     if (method === "crm.contact.list") {
-      return { ok: true, status: 200, async json() { return { result: [] }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: [] };
+        },
+      };
     }
     if (method === "crm.contact.add") {
-      return { ok: true, status: 200, async json() { return { result: 101 }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: 101 };
+        },
+      };
     }
     if (method === "crm.lead.update") {
-      return { ok: true, status: 200, async json() { return { result: true }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: true };
+        },
+      };
     }
-    return { ok: true, status: 200, async json() { return { result: true }; } };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { result: true };
+      },
+    };
   };
 
   const contactId = await ensureContact(domain, 1004, {
@@ -160,18 +256,48 @@ test("contactService: returns null when contact is created without id", async ()
   globalThis.fetch = async (url) => {
     const method = methodFromUrl(url);
     if (method === "profile") {
-      return { ok: true, status: 200, async json() { return { result: {} }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: {} };
+        },
+      };
     }
     if (method === "crm.lead.get") {
-      return { ok: true, status: 200, async json() { return { result: { CONTACT_ID: "0" } }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: { CONTACT_ID: "0" } };
+        },
+      };
     }
     if (method === "crm.contact.list") {
-      return { ok: true, status: 200, async json() { return { result: [] }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: [] };
+        },
+      };
     }
     if (method === "crm.contact.add") {
-      return { ok: true, status: 200, async json() { return { result: null }; } };
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { result: null };
+        },
+      };
     }
-    return { ok: true, status: 200, async json() { return { result: true }; } };
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { result: true };
+      },
+    };
   };
 
   const contactId = await ensureContact(domain, 1005, {

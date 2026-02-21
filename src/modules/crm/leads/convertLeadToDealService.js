@@ -1,7 +1,7 @@
 import { crmSettings } from "../../../config/settings.crm.js";
 import { makeBitrixClient } from "../../../core/bitrixClient.js";
 import { logger } from "../../../core/logger.js";
-import { getPortal } from "../../../core/store.js";
+import { getPortalAsync } from "../../../core/store.js";
 
 const CTX = "modules/crm/leads/convertLeadToDealService";
 
@@ -13,9 +13,7 @@ function toPositiveInt(value) {
 
 function normalizeOrderNumbers(orderNumbers) {
   if (!Array.isArray(orderNumbers)) return [];
-  return Array.from(
-    new Set(orderNumbers.map((x) => String(x || "").trim()).filter(Boolean)),
-  );
+  return Array.from(new Set(orderNumbers.map((x) => String(x || "").trim()).filter(Boolean)));
 }
 
 function getPrimaryOrderNumber(orderNumbers) {
@@ -75,16 +73,20 @@ function extractDealId(payload) {
 }
 
 function isLeadConverted(lead) {
-  const convertedFlags = [
-    lead?.CONVERT,
-    lead?.IS_CONVERTED,
-    lead?.CONVERTED,
-  ]
-    .map((x) => String(x || "").trim().toUpperCase())
+  const convertedFlags = [lead?.CONVERT, lead?.IS_CONVERTED, lead?.CONVERTED]
+    .map((x) =>
+      String(x || "")
+        .trim()
+        .toUpperCase(),
+    )
     .filter(Boolean);
 
   if (convertedFlags.includes("Y")) return true;
-  return String(lead?.STATUS_ID || "").trim().toUpperCase() === "CONVERTED";
+  return (
+    String(lead?.STATUS_ID || "")
+      .trim()
+      .toUpperCase() === "CONVERTED"
+  );
 }
 
 function buildDealTitle({ leadId, orderNumbers }) {
@@ -103,10 +105,9 @@ function buildDealFields({ lead, leadId, orderNumbers, dialogId }) {
       leadId,
       orderNumbers: normalizedOrders,
     }),
-    COMMENTS: `Создано автоматически после заказа в ABCP. Лид #${leadId}.` +
-      (normalizedOrders.length > 0
-        ? ` Заказ ABCP: №${normalizedOrders.join(", ")}.`
-        : "") +
+    COMMENTS:
+      `Создано автоматически после заказа в ABCP. Лид #${leadId}.` +
+      (normalizedOrders.length > 0 ? ` Заказ ABCP: №${normalizedOrders.join(", ")}.` : "") +
       (dialogId ? ` Диалог: ${dialogId}.` : ""),
     LEAD_ID: Number(leadId),
   };
@@ -115,8 +116,7 @@ function buildDealFields({ lead, leadId, orderNumbers, dialogId }) {
     fields.ORIGIN_ID = primaryOrderNumber;
     if (orderFieldCode) {
       const numericOrder = toFiniteNumberOrNull(primaryOrderNumber);
-      fields[orderFieldCode] =
-        numericOrder !== null ? numericOrder : primaryOrderNumber;
+      fields[orderFieldCode] = numericOrder !== null ? numericOrder : primaryOrderNumber;
     }
   }
 
@@ -317,7 +317,7 @@ export async function convertLeadToDealAfterAbcpOrder({
 
   let api = apiInjected;
   if (!api) {
-    const portalCfg = getPortal(portal);
+    const portalCfg = await getPortalAsync(portal);
     if (!portalCfg?.baseUrl || !portalCfg?.accessToken) {
       return { ok: false, reason: "NO_PORTAL_AUTH", dealId: null };
     }
@@ -371,9 +371,7 @@ export async function convertLeadToDealAfterAbcpOrder({
 
     return {
       ok: true,
-      reason: converted.dealId
-        ? "LEAD_CONVERTED_TO_DEAL"
-        : "LEAD_CONVERTED_NO_DEAL_ID",
+      reason: converted.dealId ? "LEAD_CONVERTED_TO_DEAL" : "LEAD_CONVERTED_NO_DEAL_ID",
       dealId: converted.dealId,
     };
   }
@@ -418,11 +416,7 @@ export async function convertLeadToDealAfterAbcpOrder({
 
     await updateDealAfterConvert(api, dealId, dealFields);
     await setLeadSuccessStatus(api, leadIdNum);
-    await addLeadComment(
-      api,
-      leadIdNum,
-      `Создана сделка #${dealId} после заказа в ABCP.`,
-    );
+    await addLeadComment(api, leadIdNum, `Создана сделка #${dealId} после заказа в ABCP.`);
 
     return {
       ok: true,

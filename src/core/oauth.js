@@ -1,7 +1,7 @@
 // @ts-check
 
 import { logger } from "./logger.js";
-import { getPortal, upsertPortal } from "./store.js";
+import { getPortalAsync, upsertPortalAsync } from "./store.js";
 
 /** @type {Map<string, Promise<string>>} */
 const _pending = new Map(); // чтобы не было параллельных refresh по одному домену
@@ -11,7 +11,7 @@ const _pending = new Map(); // чтобы не было параллельных
  * @returns {Promise<string>}
  */
 export async function refreshTokens(domain) {
-  const portal = getPortal(domain);
+  const portal = await getPortalAsync(domain);
   if (!portal?.refreshToken) throw new Error("No refresh_token saved for domain " + domain);
 
   if (_pending.has(domain)) return _pending.get(domain);
@@ -19,9 +19,14 @@ export async function refreshTokens(domain) {
   const job = (async () => {
     const clientId = process.env.BITRIX_CLIENT_ID;
     const clientSecret = process.env.BITRIX_CLIENT_SECRET;
-    const oauthUrl = (process.env.BITRIX_OAUTH_URL || "https://oauth.bitrix.info/oauth/token/").replace(/\/+$/, "") + "/";
+    const oauthUrl =
+      (process.env.BITRIX_OAUTH_URL || "https://oauth.bitrix.info/oauth/token/").replace(
+        /\/+$/,
+        "",
+      ) + "/";
 
-    if (!clientId || !clientSecret) throw new Error("BITRIX_CLIENT_ID / BITRIX_CLIENT_SECRET are required");
+    if (!clientId || !clientSecret)
+      throw new Error("BITRIX_CLIENT_ID / BITRIX_CLIENT_SECRET are required");
 
     const params = new URLSearchParams({
       grant_type: "refresh_token",
@@ -50,7 +55,7 @@ export async function refreshTokens(domain) {
       expiresAt: Date.now() + Number(json.expires_in || 3600) * 1000,
       baseUrl: json.client_endpoint || portal.baseUrl,
     };
-    upsertPortal(domain, next);
+    await upsertPortalAsync(domain, next);
     logger.info({ domain }, "OAuth refresh ok");
     return next.accessToken;
   })().finally(() => _pending.delete(domain));

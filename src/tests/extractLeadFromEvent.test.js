@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { hydrateSessionLeadFromEvent } from "../modules/bot/extractLeadFromEvent.js";
-import { getSession, saveSession } from "../modules/bot/sessionStore.js";
+import { getSession, saveSession } from "../modules/bot/sessionStore.legacy.js";
 
 const SESSIONS_DIR = path.resolve(process.cwd(), "data/sessions");
 
@@ -29,19 +29,19 @@ test.beforeEach(() => {
   cleanupSession("extract.event.bitrix24.ru", "chat9102");
 });
 
-test("extractLeadFromEvent: ignores body without portal or dialog", () => {
-  hydrateSessionLeadFromEvent(null);
-  hydrateSessionLeadFromEvent({ data: { PARAMS: { DIALOG_ID: "chat9101" } } });
-  hydrateSessionLeadFromEvent({ _portal: "extract.event.bitrix24.ru", data: { PARAMS: {} } });
+test("extractLeadFromEvent: ignores body without portal or dialog", async () => {
+  await hydrateSessionLeadFromEvent(null);
+  await hydrateSessionLeadFromEvent({ data: { PARAMS: { DIALOG_ID: "chat9101" } } });
+  await hydrateSessionLeadFromEvent({ _portal: "extract.event.bitrix24.ru", data: { PARAMS: {} } });
 
   assert.equal(getSession("extract.event.bitrix24.ru", "chat9101"), null);
 });
 
-test("extractLeadFromEvent: ignores non-LINES and invalid CHAT_ENTITY_DATA_1", () => {
+test("extractLeadFromEvent: ignores non-LINES and invalid CHAT_ENTITY_DATA_1", async () => {
   const portal = "extract.event.bitrix24.ru";
   const dialogId = "chat9101";
 
-  hydrateSessionLeadFromEvent({
+  await hydrateSessionLeadFromEvent({
     _portal: portal,
     data: {
       PARAMS: {
@@ -52,7 +52,7 @@ test("extractLeadFromEvent: ignores non-LINES and invalid CHAT_ENTITY_DATA_1", (
     },
   });
 
-  hydrateSessionLeadFromEvent({
+  await hydrateSessionLeadFromEvent({
     _portal: portal,
     data: {
       PARAMS: {
@@ -66,11 +66,11 @@ test("extractLeadFromEvent: ignores non-LINES and invalid CHAT_ENTITY_DATA_1", (
   assert.equal(getSession(portal, dialogId), null);
 });
 
-test("extractLeadFromEvent: creates session and writes leadId from CHAT_ENTITY_DATA_1", () => {
+test("extractLeadFromEvent: creates session and writes leadId from CHAT_ENTITY_DATA_1", async () => {
   const portal = "extract.event.bitrix24.ru";
   const dialogId = "chat9101";
 
-  hydrateSessionLeadFromEvent({
+  await hydrateSessionLeadFromEvent({
     auth: { domain: portal },
     data: {
       params: {
@@ -86,7 +86,7 @@ test("extractLeadFromEvent: creates session and writes leadId from CHAT_ENTITY_D
   assert.equal(session.leadId, "18758");
 });
 
-test("extractLeadFromEvent: updates existing session when leadId changes", () => {
+test("extractLeadFromEvent: updates existing session when leadId changes", async () => {
   const portal = "extract.event.bitrix24.ru";
   const dialogId = "chat9102";
   saveSession(portal, dialogId, {
@@ -95,7 +95,7 @@ test("extractLeadFromEvent: updates existing session when leadId changes", () =>
     history: [],
   });
 
-  hydrateSessionLeadFromEvent({
+  await hydrateSessionLeadFromEvent({
     _portal: portal,
     data: {
       PARAMS: {
@@ -110,7 +110,7 @@ test("extractLeadFromEvent: updates existing session when leadId changes", () =>
   assert.equal(session.leadId, "200");
 });
 
-test("extractLeadFromEvent: does not rewrite session when same leadId already set", () => {
+test("extractLeadFromEvent: does not rewrite session when same leadId already set", async () => {
   const portal = "extract.event.bitrix24.ru";
   const dialogId = "chat9102";
   saveSession(portal, dialogId, {
@@ -120,7 +120,7 @@ test("extractLeadFromEvent: does not rewrite session when same leadId already se
   });
   const before = fs.readFileSync(sessionFile(portal, dialogId), "utf8");
 
-  hydrateSessionLeadFromEvent({
+  await hydrateSessionLeadFromEvent({
     _portal: portal,
     data: {
       PARAMS: {

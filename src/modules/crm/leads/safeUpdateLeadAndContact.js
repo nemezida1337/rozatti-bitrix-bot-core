@@ -2,17 +2,14 @@
 
 import { crmSettings } from "../../../config/settings.crm.js";
 import { makeBitrixClient } from "../../../core/bitrixClient.js";
+import { resolveCortexStage } from "../../../core/cortexContract.js";
 import { logger } from "../../../core/logger.js";
-import { getPortal } from "../../../core/store.js";
+import { getPortalAsync } from "../../../core/store.js";
 import { detectOemsFromText } from "../../bot/oemDetector.js";
 import { ensureContact } from "../contact/contactService.js";
 import { getLead } from "../leadStateService.js";
 
-import {
-  updateLead,
-  addLeadComment,
-  setLeadProductRows,
-} from "./updateLeadService.js";
+import { updateLead, addLeadComment, setLeadProductRows } from "./updateLeadService.js";
 
 const CTX = "modules/crm/leads/safeUpdateLeadAndContact";
 const SERVICE_FRAME_LINE_RE = /-{20,}/;
@@ -52,10 +49,7 @@ function buildProductRowsFromOffers(llm) {
   let chosenIdsRaw = [];
   if (Array.isArray(llm.chosen_offer_id)) {
     chosenIdsRaw = llm.chosen_offer_id;
-  } else if (
-    typeof llm.chosen_offer_id === "number" ||
-    typeof llm.chosen_offer_id === "string"
-  ) {
+  } else if (typeof llm.chosen_offer_id === "number" || typeof llm.chosen_offer_id === "string") {
     chosenIdsRaw = [llm.chosen_offer_id];
   }
 
@@ -69,15 +63,10 @@ function buildProductRowsFromOffers(llm) {
   let chosenOffers = [];
 
   if (chosenIds.length > 0) {
-    chosenOffers = offers.filter((o) =>
-      chosenIds.includes(Number(o.id)),
-    );
+    chosenOffers = offers.filter((o) => chosenIds.includes(Number(o.id)));
 
     if (!chosenOffers.length) {
-      logger.warn(
-        { ctx: CTX, chosenIds },
-        "chosen_offer_id не найден — product_rows не создаём",
-      );
+      logger.warn({ ctx: CTX, chosenIds }, "chosen_offer_id не найден — product_rows не создаём");
       return [];
     }
   } else {
@@ -87,19 +76,33 @@ function buildProductRowsFromOffers(llm) {
   return chosenOffers.map((offer) => ({
     PRODUCT_NAME: `${offer.brand || ""} ${offer.oem || ""}`.trim(),
     PRICE: offer.price,
-    QUANTITY:
-      offer.quantity && Number(offer.quantity) > 0
-        ? Number(offer.quantity)
-        : 1,
+    QUANTITY: offer.quantity && Number(offer.quantity) > 0 ? Number(offer.quantity) : 1,
   }));
 }
 
 function mapStageToStatus(stage) {
   if (!stage) return null;
+  const stageProbe = resolveCortexStage(stage, { fallback: "NEW" });
+  if (!stageProbe.isKnown && !stageProbe.isEmpty) {
+    logger.warn(
+      { ctx: CTX, stage: stageProbe.input },
+      "Unknown stage in safeUpdateLeadAndContact: STATUS_ID update skipped",
+    );
+    return null;
+  }
+
   const aliases = crmSettings.stageAliases || {};
-  const normalizedStage = aliases[String(stage).toUpperCase()] || stage;
+  const normalizedStage = aliases[String(stageProbe.value).toUpperCase()] || stageProbe.value;
   const map = crmSettings.stageToStatusId || {};
-  return map[normalizedStage] || null;
+  const mapped = map[normalizedStage] || null;
+  if (mapped) return mapped;
+
+  if (normalizedStage === "LOST") {
+    const loss = crmSettings.lossStatusId || {};
+    return loss.LOST || loss.BAD_LEAD || null;
+  }
+
+  return null;
 }
 
 function deriveContactUpdate(update_lead_fields, session) {
@@ -163,9 +166,10 @@ function phoneLooksDerivedFromOem({ phoneRaw, lastUserMessage }) {
 function isStageForDeliveryWrite(stage) {
   const s = String(stage || "").toUpperCase();
   const fromCfg = crmSettings.deliveryWriteStages;
-  const allowed = Array.isArray(fromCfg) && fromCfg.length > 0
-    ? fromCfg.map((x) => String(x).toUpperCase())
-    : ["ADDRESS", "FINAL", "ABCP_CREATE"];
+  const allowed =
+    Array.isArray(fromCfg) && fromCfg.length > 0
+      ? fromCfg.map((x) => String(x).toUpperCase())
+      : ["ADDRESS", "FINAL", "ABCP_CREATE"];
   return allowed.includes(s);
 }
 
@@ -232,11 +236,10 @@ function isLeadConvertedInSession(session) {
   const dealId = toPositiveInt(conversion.dealId);
   if (dealId) return true;
 
-  const reason = String(conversion.reason || "").trim().toUpperCase();
-  return (
-    reason.includes("CONVERTED") ||
-    reason.includes("DEAL_CREATED_BY_FALLBACK")
-  );
+  const reason = String(conversion.reason || "")
+    .trim()
+    .toUpperCase();
+  return reason.includes("CONVERTED") || reason.includes("DEAL_CREATED_BY_FALLBACK");
 }
 
 function computeRowsOpportunity(rows) {
@@ -326,22 +329,14 @@ async function syncConvertedDeal({
 }
 
 export async function safeUpdateLeadAndContact(params) {
-  const {
-    portal,
-    dialogId,
-    chatId,
-    session,
-    llm,
-    lastUserMessage,
-    usedBackend,
-  } = params || {};
+  const { portal, dialogId, chatId, session, llm, lastUserMessage, usedBackend } = params || {};
 
   const ctx = `${CTX}.safeUpdateLeadAndContact`;
 
   try {
     if (!portal || !dialogId || !session || !llm) return;
 
-    const portalCfg = getPortal(portal);
+    const portalCfg = await getPortalAsync(portal);
     if (!portalCfg) return;
 
     const leadId = session.leadId;
@@ -367,7 +362,8 @@ export async function safeUpdateLeadAndContact(params) {
       const fromSession =
         typeof session?.lastUserMessage === "string" && session.lastUserMessage.trim()
           ? session.lastUserMessage.trim()
-          : typeof session?.state?.lastUserMessage === "string" && session.state.lastUserMessage.trim()
+          : typeof session?.state?.lastUserMessage === "string" &&
+              session.state.lastUserMessage.trim()
             ? session.state.lastUserMessage.trim()
             : null;
       if (fromSession) effectiveLastUserMessage = fromSession;
@@ -423,10 +419,11 @@ export async function safeUpdateLeadAndContact(params) {
     // Комментируем OEM даже если multi (а UF не пишем) — для аудита
     if (action === "abcp_lookup") {
       const uniq = Array.from(
-        new Set((Array.isArray(oems) ? oems : []).map((x) => String(x || "").trim()).filter(Boolean)),
+        new Set(
+          (Array.isArray(oems) ? oems : []).map((x) => String(x || "").trim()).filter(Boolean),
+        ),
       );
-      const oemForComment =
-        oemToSet || (uniq.length > 0 ? uniq.join(", ") : null);
+      const oemForComment = oemToSet || (uniq.length > 0 ? uniq.join(", ") : null);
 
       if (oemForComment) {
         try {
@@ -530,14 +527,11 @@ export async function safeUpdateLeadAndContact(params) {
     // =========================
 
     const isFinalStage = isFinalStageForEnrichment(stage);
-    let effectiveContactUpdate =
-      contact_update || deriveContactUpdate(update_lead_fields, session);
+    let effectiveContactUpdate = contact_update || deriveContactUpdate(update_lead_fields, session);
     let ensuredContactId = null;
 
     if (isFinalStage && effectiveContactUpdate) {
-      const phone = normalizePhone(
-        effectiveContactUpdate.phone || session?.phone,
-      );
+      const phone = normalizePhone(effectiveContactUpdate.phone || session?.phone);
       if (phone) {
         ensuredContactId = await ensureContact(portal, leadId, {
           NAME: effectiveContactUpdate.name,
@@ -554,9 +548,7 @@ export async function safeUpdateLeadAndContact(params) {
 
     let rowsForLead = [];
     if (isFinalStage) {
-      rowsForLead = product_rows.length > 0
-        ? product_rows
-        : buildProductRowsFromOffers(llm);
+      rowsForLead = product_rows.length > 0 ? product_rows : buildProductRowsFromOffers(llm);
 
       if (rowsForLead.length > 0) {
         await setLeadProductRows(portal, leadId, rowsForLead);
@@ -576,10 +568,7 @@ export async function safeUpdateLeadAndContact(params) {
       });
     }
 
-    logger.info(
-      { ctx, portal, dialogId, chatId, leadId, stage },
-      "safeUpdateLeadAndContact done",
-    );
+    logger.info({ ctx, portal, dialogId, chatId, leadId, stage }, "safeUpdateLeadAndContact done");
   } catch (err) {
     logger.error({ ctx, error: String(err) }, "safeUpdateLeadAndContact failed");
   }
