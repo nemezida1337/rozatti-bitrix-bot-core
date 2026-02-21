@@ -334,6 +334,50 @@ test("bitrix/events: parses nested data[AUTH] from x-www-form-urlencoded", async
   }
 });
 
+test("bitrix/events: form parser blocks prototype pollution keys", async () => {
+  const { buildServer } = await import("../core/app.js");
+  const app = await buildServer();
+  const fake = await startFakeInstallBitrix();
+
+  const domain = "audit-form-safe-parser.bitrix24.ru";
+  const appToken = "app-token-form-safe";
+
+  delete Object.prototype.polluted;
+  delete Object.prototype.pwned;
+  delete Object.prototype.boom;
+
+  const body =
+    `event=onappinstall` +
+    `&auth[domain]=${encodeURIComponent(domain)}` +
+    `&auth[access_token]=access-form-safe` +
+    `&auth[refresh_token]=refresh-form-safe` +
+    `&auth[client_endpoint]=${encodeURIComponent(fake.baseUrl)}` +
+    `&auth[application_token]=${appToken}` +
+    `&data[__proto__][polluted]=1` +
+    `&__proto__[pwned]=1` +
+    `&constructor[prototype][boom]=1`;
+
+  try {
+    const res = await app.inject({
+      method: "POST",
+      url: "/bitrix/events",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: body,
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal({}.polluted, undefined);
+    assert.equal({}.pwned, undefined);
+    assert.equal({}.boom, undefined);
+  } finally {
+    await fake.close();
+    await app.close();
+    delete Object.prototype.polluted;
+    delete Object.prototype.pwned;
+    delete Object.prototype.boom;
+  }
+});
+
 test("bitrix/events: dumps supported events with sanitized payload", async () => {
   resetDumpDir();
   const { buildServer } = await import("../core/app.js");
@@ -422,7 +466,7 @@ test("bitrix/events: does not dump unsupported events", async () => {
   }
 });
 
-test("gate: on PRICING stage without offers should not call Cortex", () => {
+test("gate: on PRICING stage without offers should call Cortex in cortex classifier mode", () => {
   const ctx = {
     message: { text: "какой лучше вариант?" },
     hasImage: false,
@@ -435,7 +479,29 @@ test("gate: on PRICING stage without offers should not call Cortex", () => {
   const { gateInput, decision } = buildDecision(ctx);
   assert.equal(gateInput.leadStageKey, "PRICING");
   assert.equal(gateInput.hasOffers, false);
-  assert.equal(decision.shouldCallCortex, false);
+  assert.equal(decision.shouldCallCortex, true);
+});
+
+test("gate: on PRICING stage without offers stays legacy when NODE_LEGACY_CLASSIFICATION=1", () => {
+  const prev = process.env.NODE_LEGACY_CLASSIFICATION;
+  process.env.NODE_LEGACY_CLASSIFICATION = "1";
+
+  try {
+    const ctx = {
+      message: { text: "какой лучше вариант?" },
+      hasImage: false,
+      detectedOems: [],
+      lead: { statusId: crmSettings.stageToStatusId.PRICING, oemInLead: null },
+      session: { state: { offers: [] }, mode: "auto" },
+      manualStatuses: crmSettings.manualStatuses,
+    };
+
+    const { decision } = buildDecision(ctx);
+    assert.equal(decision.shouldCallCortex, false);
+  } finally {
+    if (prev == null) delete process.env.NODE_LEGACY_CLASSIFICATION;
+    else process.env.NODE_LEGACY_CLASSIFICATION = prev;
+  }
 });
 
 test("gate: on PRICING stage with offers should call Cortex", () => {

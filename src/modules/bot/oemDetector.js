@@ -153,6 +153,9 @@ export function detectOemsFromText(text) {
   const cleaned = matches
     .map((m) => m.replace(/[^A-Z0-9]/gi, "").toUpperCase())
     .filter((m) => m.length >= 6 && m.length <= 20)
+    // OEM должен содержать цифры. Чисто буквенные токены (например, VOLKSWAGEN)
+    // часто дают ложные срабатывания в VIN/описательных сообщениях.
+    .filter((m) => /\d/.test(m))
     // Не считаем валидный 17-символьный VIN как OEM.
     .filter((m) => !(m.length === 17 && VIN_ALLOWED_17_REGEX.test(m)))
     // P0: не считаем телефоны OEM-ом (особенно на стадиях CONTACT/ADDRESS).

@@ -30,6 +30,51 @@ test("normalizeIncomingMessage extracts dialogId/chatId/text/fromUserId/messageI
   assert.match(msg.text, /5QM411105R/i);
 });
 
+test("normalizeIncomingMessage extracts CRM lead/deal bindings", () => {
+  const leadBound = normalizeIncomingMessage({
+    data: {
+      PARAMS: {
+        DIALOG_ID: "chat9001",
+        CHAT_ENTITY_DATA_1: "Y|LEAD|32332|N|N|42720|1771573767|0|0|0",
+        CHAT_ENTITY_DATA_2: "LEAD|32332|COMPANY|0|CONTACT|22544|DEAL|0",
+      },
+    },
+  });
+
+  assert.equal(leadBound.leadId, "32332");
+  assert.equal(leadBound.dealId, null);
+
+  const dealBound = normalizeIncomingMessage({
+    data: {
+      PARAMS: {
+        DIALOG_ID: "chat9002",
+        CHAT_ENTITY_DATA_1: "Y|DEAL|3860|N|N|42708|1771572461|0|0|0",
+        CHAT_ENTITY_DATA_2: "LEAD|0|COMPANY|0|CONTACT|25278|DEAL|3860",
+      },
+    },
+  });
+
+  assert.equal(dealBound.leadId, null);
+  assert.equal(dealBound.dealId, "3860");
+});
+
+test("normalizeIncomingMessage extracts CRM bindings from CHAT entity data fallback", () => {
+  const msg = normalizeIncomingMessage({
+    data: {
+      PARAMS: {
+        DIALOG_ID: "chat9003",
+      },
+      CHAT: {
+        ENTITY_DATA_1: "Y|DEAL|4888|N|N|0|0|0|0|0",
+        ENTITY_DATA_2: "LEAD|0|COMPANY|0|CONTACT|25278|DEAL|4888",
+      },
+    },
+  });
+
+  assert.equal(msg.leadId, null);
+  assert.equal(msg.dealId, "4888");
+});
+
 test("normalizeIncomingMessage: returns null for empty body", () => {
   assert.equal(normalizeIncomingMessage(null), null);
 });

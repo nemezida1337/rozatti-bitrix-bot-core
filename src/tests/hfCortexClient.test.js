@@ -85,6 +85,42 @@ test("hfCortexClient: successful call sends auth headers and parses response", a
   );
 });
 
+test("hfCortexClient: supports HF_CORTEX_TOKEN env alias", async () => {
+  await withEnv(
+    {
+      HF_CORTEX_ENABLED: "true",
+      HF_CORTEX_URL: "http://cortex.local/lead-sales-token",
+      HF_CORTEX_TIMEOUT_MS: "5000",
+      HF_CORTEX_TOKEN: "token-only",
+      HF_CORTEX_API_KEY: undefined,
+      HF_CORTEX_DUMP: "0",
+    },
+    async () => {
+      const originalFetch = global.fetch;
+      const calls = [];
+      global.fetch = async (url, options) => {
+        calls.push({ url, options });
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: async () => JSON.stringify({ ok: true, flow: "lead_sales", stage: "NEW" }),
+        };
+      };
+
+      try {
+        const data = await callCortexLeadSales({ msg: { dialogId: "chat-token-1" } });
+        assert.equal(data?.ok, true);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].options?.headers?.["X-HF-CORTEX-TOKEN"], "token-only");
+        assert.equal(calls[0].options?.headers?.Authorization, "Bearer token-only");
+      } finally {
+        global.fetch = originalFetch;
+      }
+    },
+  );
+});
+
 test("hfCortexClient: returns null on non-OK HTTP status", async () => {
   await withEnv(
     {

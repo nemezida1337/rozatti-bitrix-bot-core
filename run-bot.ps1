@@ -10,6 +10,13 @@ Set-Location $PSScriptRoot
 $work   = (Get-Location).Path
 $rt     = Join-Path $work '_runtime'
 $baseTx = Join-Path $rt 'BASE_URL.txt'
+
+# Перед стартом бота синхронизируем quick tunnel URL в _runtime/BASE_URL.txt.
+$tunnelScript = Join-Path $PSScriptRoot 'start-tunnel-once.ps1'
+if (Test-Path $tunnelScript) {
+  & $tunnelScript -Port $Port
+}
+
 if(-not (Test-Path $baseTx)){ throw "Не найден $baseTx. Сначала запусти .\start-tunnel-once.ps1" }
 $BASE_URL = (Get-Content -Raw -LiteralPath $baseTx).Trim()
 if(-not $BASE_URL){ throw "BASE_URL пуст. Перезапусти туннель." }

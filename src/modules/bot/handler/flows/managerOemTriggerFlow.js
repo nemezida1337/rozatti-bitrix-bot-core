@@ -1,6 +1,6 @@
 // src/modules/bot/handler/flows/managerOemTriggerFlow.js
 //
-// ✅ ABSOLUTE TRIGGER: manager filled OEM in lead → AUTO start
+// ✅ TRIGGER: manager filled OEM in lead on VIN_PICK stage → AUTO start
 // Вынесено из handler_llm_manager.js без изменения поведения.
 
 import { callCortexLeadSales } from "../../../../core/hfCortexClient.js";
@@ -11,6 +11,7 @@ import { crmSettings } from "../../../settings.crm.js";
 import { saveSession } from "../../sessionStore.js";
 import { sendChatReplyIfAllowed } from "../shared/chatReply.js";
 import { mapCortexResultToLlmResponse } from "../shared/cortex.js";
+import { appendSessionHistoryTurn } from "../shared/historyContext.js";
 import { isManagerOemTrigger } from "../shared/leadOem.js";
 import { normalizeOemCandidates, applyLlmToSession } from "../shared/session.js";
 
@@ -22,9 +23,33 @@ export async function runManagerOemTriggerFlow({
   session,
   baseCtx = "modules/bot/handler_llm_manager",
 }) {
+  const sendBotReply = async (message, kind = null) => {
+    const safeMessage = String(message || "").trim();
+    if (!safeMessage) return;
+
+    const sent = await sendChatReplyIfAllowed({
+      api,
+      portalDomain,
+      portalCfg,
+      dialogId,
+      leadId: session.leadId,
+      dealId: session?.dealId || null,
+      message: safeMessage,
+    });
+    if (!sent) return;
+
+    appendSessionHistoryTurn(session, {
+      role: "bot",
+      text: safeMessage,
+      kind: kind || "bot_reply",
+      ts: Date.now(),
+    });
+  };
+
   // если лида нет — триггер невозможен
   if (!session?.leadId) return false;
   const manualStatuses = crmSettings?.manualStatuses || [];
+  const vinPickStatusId = crmSettings?.stageToStatusId?.VIN_PICK || null;
   const oemField = crmSettings?.leadFields?.OEM;
 
   let lead = null;
@@ -51,12 +76,39 @@ export async function runManagerOemTriggerFlow({
   // ✅ ВАЖНО: всегда синхронизируем lastSeenLeadOem с лидом (но триггерим только empty→filled)
   const prevSeen = session.lastSeenLeadOem ? String(session.lastSeenLeadOem).trim() : "";
   const nowSeen = currentLeadOem ? String(currentLeadOem).trim() : "";
+  const baselineInitialized = session.leadOemBaselineInitialized === true;
 
-  // Триггер допустим только в ручных статусах (или если сессия уже в manual)
-  const allowTrigger =
-    (leadStatusId && manualStatuses.includes(leadStatusId)) || session?.mode === "manual";
+  const isManualStatus = !!leadStatusId && manualStatuses.includes(leadStatusId);
+  const isVinPickStatus = vinPickStatusId
+    ? String(leadStatusId || "") === String(vinPickStatusId)
+    : isManualStatus;
 
-  if (isManagerOemTrigger(session, currentLeadOem) && allowTrigger) {
+  // Триггер допустим только на VIN_PICK (фоллбек: любой manual-статус, если VIN_PICK не настроен)
+  const allowTrigger = isVinPickStatus;
+
+  // Защита от ложного auto-start после рестарта:
+  // первый проход только синхронизирует baseline с фактическим OEM в лиде.
+  // Исключение: если есть ожидаемые OEM-кандидаты из pending manual-flow и OEM совпал.
+  let allowFirstPassTrigger = false;
+  if (!baselineInitialized) {
+    session.lastSeenLeadOem = nowSeen || null;
+    session.leadOemBaselineInitialized = true;
+
+    if (nowSeen && Array.isArray(session.oem_candidates) && session.oem_candidates.length > 0) {
+      const nowUpper = nowSeen.toUpperCase();
+      const hasPendingMatch = session.oem_candidates.some(
+        (x) => String(x || "").trim().toUpperCase() === nowUpper,
+      );
+      allowFirstPassTrigger = hasPendingMatch;
+    }
+  }
+
+  const triggerByTransition = baselineInitialized
+    ? isManagerOemTrigger({ lastSeenLeadOem: prevSeen }, currentLeadOem)
+    : false;
+  const shouldTrigger = allowTrigger && (triggerByTransition || allowFirstPassTrigger);
+
+  if (shouldTrigger) {
     const ctxTrig = `${baseCtx}.MANAGER_OEM_TRIGGER`;
 
     logger.info(
@@ -68,11 +120,12 @@ export async function runManagerOemTriggerFlow({
         currentLeadOem,
         leadStatusId,
       },
-      "Менеджер заполнил OEM в лиде → абсолютный триггер AUTO",
+      "Менеджер заполнил OEM в лиде на VIN_PICK → триггер AUTO",
     );
 
     session.mode = "auto";
     session.lastSeenLeadOem = nowSeen;
+    session.leadOemBaselineInitialized = true;
     session.oem_candidates = normalizeOemCandidates([nowSeen]); // фиксируем как текущий контекст
 
     // 1) ABCP по OEM из лида
@@ -120,14 +173,7 @@ export async function runManagerOemTriggerFlow({
 
       // Ответ клиенту — только если не manual статус
       if (llm.reply) {
-        await sendChatReplyIfAllowed({
-          api,
-          portalDomain,
-          portalCfg,
-          dialogId,
-          leadId: session.leadId,
-          message: llm.reply,
-        });
+        await sendBotReply(llm.reply, "manager_oem_trigger_reply");
       }
 
       return true;
@@ -139,8 +185,9 @@ export async function runManagerOemTriggerFlow({
   }
 
   // ✅ просто синхронизация (без триггера)
-  if (nowSeen && nowSeen !== prevSeen) {
-    session.lastSeenLeadOem = nowSeen;
+  if (nowSeen !== prevSeen) {
+    session.lastSeenLeadOem = nowSeen || null;
+    session.leadOemBaselineInitialized = true;
   }
 
   return false;

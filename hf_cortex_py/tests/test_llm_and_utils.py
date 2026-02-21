@@ -36,9 +36,30 @@ def test_call_llm_with_cortex_request_falls_back_on_invalid_json(monkeypatch):
 
     assert out.action == "reply"
     assert out.stage == "NEW"
-    assert out.reply == "not-a-json"
+    assert "номер детали" in out.reply
     assert out.chosen_offer_id is None
     assert out.update_lead_fields == {}
+
+
+def test_call_llm_with_cortex_request_falls_back_on_llm_exception(monkeypatch):
+    class _ExplodingOpenAIClient:
+        class _FakeChat:
+            class _FakeCompletions:
+                def create(self, **kwargs):
+                    raise RuntimeError("network down")
+
+            completions = _FakeCompletions()
+
+        chat = _FakeChat()
+
+    monkeypatch.setattr(llm_client, "OpenAI", lambda: _ExplodingOpenAIClient())
+
+    out = llm_client.call_llm_with_cortex_request({"app": "test", "flow": "lead_sales"})
+
+    assert out.action == "reply"
+    assert out.stage == "NEW"
+    assert "Сервис временно недоступен" in out.reply
+    assert out.debug.get("llm_call_failed") is True
 
 
 def test_call_llm_with_cortex_request_parses_json_and_keeps_contract(monkeypatch):
@@ -48,6 +69,10 @@ def test_call_llm_with_cortex_request_parses_json_and_keeps_contract(monkeypatch
             "action": "reply",
             "stage": "CONTACT",
             "reply": "ok",
+            "intent": "OEM_QUERY",
+            "confidence": 0.82,
+            "ambiguity_reason": None,
+            "requires_clarification": False,
             "client_name": "Иванов Иван Иванович",
             "update_lead_fields": {},
             "contact_update": {},
@@ -68,6 +93,9 @@ def test_call_llm_with_cortex_request_parses_json_and_keeps_contract(monkeypatch
 
     assert out.stage == "CONTACT"
     assert out.reply == "ok"
+    assert out.intent == "OEM_QUERY"
+    assert out.confidence == 0.82
+    assert out.requires_clarification is False
     assert out.update_lead_fields.get("LAST_NAME") == "Иванов"
     assert out.update_lead_fields.get("NAME") == "Иван"
     assert out.update_lead_fields.get("SECOND_NAME") == "Иванович"
@@ -131,7 +159,7 @@ def test_normalize_llm_result_sanitizes_bad_payload_types():
     out = llm_client.normalize_llm_result(
         {
             "action": "reply",
-            "stage": "NEW",
+            "stage": ["NEW"],
             "reply": "ok",
             "update_lead_fields": "bad",
             "contact_update": "bad",
@@ -141,6 +169,12 @@ def test_normalize_llm_result_sanitizes_bad_payload_types():
             "product_picks": None,
             "meta": None,
             "debug": None,
+            "need_operator": "false",
+            "chosen_offer_id": {"id": 1},
+            "intent": ["OEM_QUERY"],
+            "confidence": "invalid",
+            "ambiguity_reason": {"x": 1},
+            "requires_clarification": "false",
         }
     )
     assert out.stage == "NEW"
@@ -151,6 +185,30 @@ def test_normalize_llm_result_sanitizes_bad_payload_types():
     assert out.product_picks == []
     assert out.meta == {}
     assert out.debug == {}
+    assert out.need_operator is False
+    assert out.chosen_offer_id is None
+    assert out.intent is None
+    assert out.confidence is None
+    assert out.ambiguity_reason is None
+    assert out.requires_clarification is False
+
+
+def test_normalize_llm_result_normalizes_intent_confidence_and_clarification():
+    out = llm_client.normalize_llm_result(
+        {
+            "stage": "NEW",
+            "reply": "Уточните, пожалуйста",
+            "intent": "clarify_number_type",
+            "confidence": "1.7",
+            "ambiguity_reason": "NUMBER_TYPE_AMBIGUOUS",
+            "requires_clarification": "true",
+        }
+    )
+
+    assert out.intent == "CLARIFY_NUMBER_TYPE"
+    assert out.confidence == 1.0
+    assert out.ambiguity_reason == "NUMBER_TYPE_AMBIGUOUS"
+    assert out.requires_clarification is True
 
 
 def test_normalize_llm_result_does_not_override_existing_name_fields():

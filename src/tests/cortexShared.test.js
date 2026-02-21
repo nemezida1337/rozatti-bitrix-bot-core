@@ -33,6 +33,10 @@ test("cortex shared: mapCortexResultToLlmResponse supports multiple valid choice
   const cortex = {
     result: {
       stage: "FINAL",
+      intent: "oem_query",
+      confidence: "1.2",
+      ambiguity_reason: "NUMBER_TYPE_AMBIGUOUS",
+      requires_clarification: "1",
       offers: [{ id: 1 }, { id: 2 }, { id: 3 }],
       chosen_offer_id: [1, "2", "404"],
       oems: ["AAA111"],
@@ -47,6 +51,10 @@ test("cortex shared: mapCortexResultToLlmResponse supports multiple valid choice
   const mapped = mapCortexResultToLlmResponse(cortex);
 
   assert.equal(mapped.stage, "FINAL");
+  assert.equal(mapped.intent, "OEM_QUERY");
+  assert.equal(mapped.confidence, 1);
+  assert.equal(mapped.ambiguity_reason, "NUMBER_TYPE_AMBIGUOUS");
+  assert.equal(mapped.requires_clarification, true);
   assert.deepEqual(mapped.chosen_offer_id, [1, 2]);
   assert.deepEqual(mapped.oems, ["AAA111"]);
   assert.deepEqual(mapped.update_lead_fields, { PHONE: "+79990001122" });
@@ -62,6 +70,10 @@ test("cortex shared: mapCortexResultToLlmResponse falls back to defaults", () =>
   assert.equal(mapped.stage, "NEW");
   assert.equal(mapped.reply, "");
   assert.equal(mapped.action, null);
+  assert.equal(mapped.intent, null);
+  assert.equal(mapped.confidence, null);
+  assert.equal(mapped.ambiguity_reason, null);
+  assert.equal(mapped.requires_clarification, false);
   assert.deepEqual(mapped.oems, []);
   assert.deepEqual(mapped.offers, []);
   assert.equal(mapped.chosen_offer_id, null);

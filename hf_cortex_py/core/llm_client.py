@@ -6,12 +6,171 @@
 import re
 import json
 import unicodedata
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Union
 
 from openai import OpenAI
 
 from core.models import CortexResult
 from core.prompt_lead_sales import SYSTEM_PROMPT
+
+
+# --------------------------------------------
+# 0. Безопасные нормализаторы
+# --------------------------------------------
+
+ALLOWED_STAGE_SET = {
+    "NEW",
+    "PRICING",
+    "CONTACT",
+    "ADDRESS",
+    "FINAL",
+    "HARD_PICK",
+    "LOST",
+    "ABCP_CREATE",
+}
+
+ALLOWED_INTENT_SET = {
+    "OEM_QUERY",
+    "VIN_HARD_PICK",
+    "ORDER_STATUS",
+    "SERVICE_NOTICE",
+    "SMALL_TALK",
+    "CLARIFY_NUMBER_TYPE",
+    "LOST",
+    "OUT_OF_SCOPE",
+}
+
+
+def _normalize_stage(raw: Any) -> str:
+    if not isinstance(raw, str):
+        return "NEW"
+    stage = raw.strip().upper()
+    if not stage:
+        return "NEW"
+    return stage if stage in ALLOWED_STAGE_SET else stage
+
+
+def _normalize_bool(raw: Any, *, default: bool = False) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        v = raw.strip().lower()
+        if v in {"true", "1", "yes", "y", "on"}:
+            return True
+        if v in {"false", "0", "no", "n", "off", ""}:
+            return False
+    return default
+
+
+def _normalize_intent(raw: Any) -> Optional[str]:
+    if not isinstance(raw, str):
+        return None
+    val = raw.strip().upper()
+    if not val:
+        return None
+    if val in ALLOWED_INTENT_SET:
+        return val
+    return None
+
+
+def _normalize_confidence(raw: Any) -> Optional[float]:
+    if raw is None:
+        return None
+    try:
+        val = float(raw)
+    except Exception:
+        return None
+    if val < 0:
+        return 0.0
+    if val > 1:
+        return 1.0
+    return val
+
+
+def _normalize_ambiguity_reason(raw: Any) -> Optional[str]:
+    if not isinstance(raw, str):
+        return None
+    val = raw.strip()
+    return val if val else None
+
+
+def _normalize_list_of_dicts(raw: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    return [x for x in raw if isinstance(x, dict)]
+
+
+def _normalize_oems(raw: Any) -> List[str]:
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for x in raw:
+        if isinstance(x, str) and x.strip():
+            out.append(x.strip().upper())
+    return out
+
+
+def _normalize_chosen_offer_id(raw: Any) -> Optional[Union[int, List[int]]]:
+    if raw is None:
+        return None
+
+    if isinstance(raw, int):
+        return raw if raw > 0 else None
+
+    if isinstance(raw, str):
+        s = raw.strip()
+        if s.isdigit():
+            n = int(s)
+            return n if n > 0 else None
+        return None
+
+    if isinstance(raw, list):
+        out: List[int] = []
+        for x in raw:
+            if isinstance(x, int):
+                n = x
+            elif isinstance(x, str) and x.strip().isdigit():
+                n = int(x.strip())
+            else:
+                continue
+            if n > 0:
+                out.append(n)
+        if not out:
+            return None
+        uniq: List[int] = []
+        seen = set()
+        for n in out:
+            if n in seen:
+                continue
+            seen.add(n)
+            uniq.append(n)
+        return uniq
+
+    return None
+
+
+def _fallback_llm_dict(*, debug: Optional[Dict[str, Any]] = None, reply: Optional[str] = None) -> Dict[str, Any]:
+    return {
+        "action": "reply",
+        "stage": "NEW",
+        "reply": reply or "Уточните, пожалуйста, номер детали или VIN, и я продолжу подбор.",
+        "intent": None,
+        "confidence": None,
+        "ambiguity_reason": None,
+        "requires_clarification": False,
+        "need_operator": False,
+        "oems": [],
+        "update_lead_fields": {},
+        "client_name": None,
+        "offers": [],
+        "chosen_offer_id": None,
+        "contact_update": None,
+        "product_rows": [],
+        "product_picks": [],
+        "debug": debug or {},
+    }
 
 
 # --------------------------------------------
@@ -155,14 +314,14 @@ def normalize_llm_result(llm: Dict[str, Any]) -> CortexResult:
         contact_update = {}
 
     # Текст ответа (могут быть нужны для отладки, но НЕ для ФИО/телефона)
-    reply_text = llm.get("reply") or ""
-    stage = llm.get("stage") or "NEW"
+    reply_text = llm.get("reply") if isinstance(llm.get("reply"), str) else ""
+    stage = _normalize_stage(llm.get("stage"))
 
     # ----------------------------------------
     # 4.1. Разбор ФИО (только на CONTACT / FINAL
     #      и только если есть явный источник ФИО)
     # ----------------------------------------
-    if stage in {"CONTACT", "FINAL"}:
+    if stage in {"CONTACT", "FINAL", "ADDRESS"}:
         fio_source = (
             llm.get("client_name")
             or update_lead_fields.get("client_name")
@@ -196,24 +355,30 @@ def normalize_llm_result(llm: Dict[str, Any]) -> CortexResult:
     # ----------------------------------------
     # 4.3. Формирование CortexResult
     # ----------------------------------------
-    result = CortexResult(
-        action=llm.get("action", "reply"),
-        stage=stage,
-        reply=reply_text,
-        oems=llm.get("oems") or [],
-        need_operator=bool(llm.get("need_operator", False)),
-        update_lead_fields=update_lead_fields,
-        client_name=llm.get("client_name"),
-        product_rows=llm.get("product_rows") or [],
-        product_picks=llm.get("product_picks") or [],
-        offers=llm.get("offers") or [],
-        chosen_offer_id=llm.get("chosen_offer_id"),
-        contact_update=contact_update or None,
-        meta=llm.get("meta") or {},
-        debug=llm.get("debug") or {},
-    )
-
-    return result
+    try:
+        result = CortexResult(
+            action=llm.get("action", "reply"),
+            stage=stage,
+            reply=reply_text,
+            intent=_normalize_intent(llm.get("intent")),
+            confidence=_normalize_confidence(llm.get("confidence")),
+            ambiguity_reason=_normalize_ambiguity_reason(llm.get("ambiguity_reason")),
+            requires_clarification=_normalize_bool(llm.get("requires_clarification"), default=False),
+            oems=_normalize_oems(llm.get("oems")),
+            need_operator=_normalize_bool(llm.get("need_operator"), default=False),
+            update_lead_fields=update_lead_fields,
+            client_name=llm.get("client_name"),
+            product_rows=llm.get("product_rows") if isinstance(llm.get("product_rows"), list) else [],
+            product_picks=llm.get("product_picks") if isinstance(llm.get("product_picks"), list) else [],
+            offers=_normalize_list_of_dicts(llm.get("offers")),
+            chosen_offer_id=_normalize_chosen_offer_id(llm.get("chosen_offer_id")),
+            contact_update=contact_update or None,
+            meta=llm.get("meta") if isinstance(llm.get("meta"), dict) else {},
+            debug=llm.get("debug") if isinstance(llm.get("debug"), dict) else {},
+        )
+        return result
+    except Exception:
+        return CortexResult(**_fallback_llm_dict(debug={"llm_invalid_payload": True}))
 
 
 # --------------------------------------------
@@ -231,34 +396,29 @@ def call_llm_with_cortex_request(cortex_request: Dict[str, Any]) -> CortexResult
     # SYSTEM_PROMPT — из core.prompt_lead_sales
     system_prompt = SYSTEM_PROMPT
 
-    completion = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(cortex_request, ensure_ascii=False)},
-        ],
-        response_format={"type": "json_object"},
-    )
-
-    raw = completion.choices[0].message.content or ""
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(cortex_request, ensure_ascii=False)},
+            ],
+            response_format={"type": "json_object"},
+        )
+        raw = completion.choices[0].message.content or ""
+    except Exception:
+        return CortexResult(
+            **_fallback_llm_dict(
+                debug={"llm_call_failed": True},
+                reply="Сервис временно недоступен, менеджер скоро подключится.",
+            )
+        )
 
     try:
         llm_dict = json.loads(raw)
     except Exception:
-        # fallback, если модель сломала JSON
-        llm_dict = {
-            "action": "reply",
-            "stage": "NEW",
-            "reply": raw,
-            "need_operator": False,
-            "oems": [],
-            "update_lead_fields": {},
-            "client_name": None,
-            "offers": [],
-            "chosen_offer_id": None,
-            "contact_update": None,
-            "product_rows": [],
-            "product_picks": [],
-        }
+        # fallback, если модель сломала JSON.
+        # В reply не отдаём сырой текст модели, чтобы не утекали внутренности.
+        llm_dict = _fallback_llm_dict(debug={"llm_invalid_json": True})
 
     return normalize_llm_result(llm_dict)

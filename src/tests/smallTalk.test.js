@@ -81,6 +81,22 @@ test("smallTalk: resolves HOURS for working-hours questions", () => {
   assert.equal(result.reply, salesFaqSettings.topics.HOURS);
 });
 
+test("smallTalk: resolves HOURS for phrase 'как вы работаете'", () => {
+  const result = resolveSmallTalk("добрый день, как вы работаете?");
+  assert.ok(result);
+  assert.equal(result.intent, "HOWTO");
+  assert.equal(result.topic, "HOURS");
+  assert.equal(result.reply, salesFaqSettings.topics.HOURS);
+});
+
+test("smallTalk: resolves HOURS for phrase 'до скольки работаете'", () => {
+  const result = resolveSmallTalk("до скольки работаете");
+  assert.ok(result);
+  assert.equal(result.intent, "HOWTO");
+  assert.equal(result.topic, "HOURS");
+  assert.equal(result.reply, salesFaqSettings.topics.HOURS);
+});
+
 test("smallTalk: resolves PAYMENT for settlement question", () => {
   const result = resolveSmallTalk("Здравствуйте, завтра будет проводиться расчет?");
   assert.ok(result);

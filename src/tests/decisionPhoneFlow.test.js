@@ -42,7 +42,7 @@ test("Attachment-only message is treated as COMPLEX (not EMPTY)", () => {
   assert.equal(decision.shouldReply, true);
 });
 
-test("VIN + OEM in one message is treated as VIN (manual handover first)", () => {
+test("VIN + OEM in one message is treated as OEM (cortex-first mixed handling)", () => {
   const text = "вин WDD2211761A308475, номер A221421201207";
   const detectedOems = detectOemsFromText(text);
   assert.deepEqual(detectedOems, ["A221421201207"]);
@@ -57,10 +57,10 @@ test("VIN + OEM in one message is treated as VIN (manual handover first)", () =>
   };
 
   const { gateInput, decision } = buildDecision(ctx);
-  assert.equal(gateInput.requestType, "VIN");
-  assert.equal(decision.mode, "manual");
-  assert.equal(decision.shouldCallCortex, false);
-  assert.equal(decision.replyType, "MANUAL_ACK");
+  assert.equal(gateInput.requestType, "OEM");
+  assert.equal(decision.mode, "auto");
+  assert.equal(decision.shouldCallCortex, true);
+  assert.equal(decision.replyType, "AUTO_START");
 });
 
 test("VIN keyword without valid VIN code keeps OEM flow in auto mode", () => {

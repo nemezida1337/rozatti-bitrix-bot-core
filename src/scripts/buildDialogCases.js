@@ -312,6 +312,27 @@ function isRepeatFollowupByHistory({
   return sameAsPrev || prevManagerHelpful || prevSubstantive;
 }
 
+function isContextFollowupCandidate({
+  text,
+  prevClientTurn,
+  oemsCount = 0,
+  isVinLike = false,
+  managerKind = "UNKNOWN",
+}) {
+  if (oemsCount > 0 || isVinLike) return false;
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  if (!prevClientTurn?.text) return false;
+
+  const len = raw.length;
+  if (len > 80) return false;
+
+  if (["CONTACT", "ADDRESS", "PRICING", "ORDER", "STATUS"].includes(managerKind)) return true;
+  if (managerKind === "INFO" && len <= 40) return true;
+
+  return false;
+}
+
 function classifyCase({ clientTurn, managerTurn, prevClientTurn, prevManagerTurn }) {
   const text = String(clientTurn?.text || "").trim();
   if (!text) return { kind: null, confidence: 0, reason: "empty_client_text" };
@@ -382,7 +403,7 @@ function classifyCase({ clientTurn, managerTurn, prevClientTurn, prevManagerTurn
     };
   }
 
-  if (isVinLike && managerKind === "HANDOVER") {
+  if (isVinLike && oems.length === 0 && managerKind === "HANDOVER") {
     return {
       kind: "VIN_HANDOVER",
       confidence: 0.96,
@@ -391,7 +412,7 @@ function classifyCase({ clientTurn, managerTurn, prevClientTurn, prevManagerTurn
     };
   }
 
-  if (isVinLike && (managerKind === "SERVICE_ACK" || managerKind === "INFO")) {
+  if (isVinLike && oems.length === 0 && (managerKind === "SERVICE_ACK" || managerKind === "INFO")) {
     if (isServiceAckReply(managerText)) {
       return {
         kind: "VIN_SERVICE_ACK",
@@ -407,7 +428,7 @@ function classifyCase({ clientTurn, managerTurn, prevClientTurn, prevManagerTurn
     }
   }
 
-  if (isServiceAckReply(managerText) && (oems.length > 0 || isStatusQuestion(text))) {
+  if (isServiceAckReply(managerText)) {
     return {
       kind: "SERVICE_ACK",
       confidence: 0.88,
@@ -462,6 +483,29 @@ function classifyCase({ clientTurn, managerTurn, prevClientTurn, prevManagerTurn
         oemsCount: oems.length,
         smallTalkIntent: "OFFTOPIC",
         smallTalkTopic: null,
+        isVinLike,
+      },
+    };
+  }
+
+  if (
+    isContextFollowupCandidate({
+      text,
+      prevClientTurn,
+      oemsCount: oems.length,
+      isVinLike,
+      managerKind,
+    })
+  ) {
+    return {
+      kind: "TEXT_CONTEXT_FOLLOWUP",
+      confidence: 0.84,
+      reason: "short_contextual_followup_without_oem_or_vin",
+      signals: {
+        managerKind,
+        oemsCount: oems.length,
+        smallTalkIntent: smallTalk?.intent || null,
+        smallTalkTopic: smallTalk?.topic || null,
         isVinLike,
       },
     };

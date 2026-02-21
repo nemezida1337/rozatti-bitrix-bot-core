@@ -46,10 +46,32 @@ export function mapCortexResultToLlmResponse(cortex) {
   if (validChosen.length === 1) chosenFinal = validChosen[0];
   else if (validChosen.length > 1) chosenFinal = validChosen;
 
+  const rawIntent = typeof payload.intent === "string" ? payload.intent.trim().toUpperCase() : "";
+  const intent = rawIntent || null;
+
+  let confidence = null;
+  if (payload.confidence != null) {
+    const n = Number(payload.confidence);
+    if (Number.isFinite(n)) {
+      if (n < 0) confidence = 0;
+      else if (n > 1) confidence = 1;
+      else confidence = n;
+    }
+  }
+
+  const ambiguity_reason =
+    typeof payload.ambiguity_reason === "string" && payload.ambiguity_reason.trim()
+      ? payload.ambiguity_reason.trim()
+      : null;
+
   const mapped = {
     action: payload.action ?? null,
     stage,
     reply: payload.reply || "",
+    intent,
+    confidence,
+    ambiguity_reason,
+    requires_clarification: !!payload.requires_clarification,
 
     client_name: payload.client_name || null,
     oems: Array.isArray(payload.oems) ? payload.oems : [],

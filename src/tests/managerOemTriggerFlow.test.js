@@ -4,6 +4,9 @@ import axios from "axios";
 
 import { crmSettings } from "../modules/settings.crm.js";
 
+const VIN_PICK_STATUS_ID = crmSettings.stageToStatusId.VIN_PICK;
+const IN_WORK_STATUS_ID = crmSettings.stageToStatusId.IN_WORK;
+
 const originalAxiosCreate = axios.create;
 const originalFetch = global.fetch;
 const originalEnv = {
@@ -133,6 +136,40 @@ test("managerOemTriggerFlow: syncs lastSeenLeadOem when OEM changed but no trigg
   assert.deepEqual(session.oem_candidates, []);
 });
 
+test("managerOemTriggerFlow: does not trigger outside VIN_PICK stage", async () => {
+  stubAbcpGet = async () => ({ data: [] });
+
+  const oemField = crmSettings.leadFields.OEM;
+  const api = makeApi((method, payload) => {
+    assert.equal(method, "crm.lead.get");
+    assert.deepEqual(payload, { id: 7021 });
+    return {
+      ID: 7021,
+      STATUS_ID: IN_WORK_STATUS_ID,
+      [oemField]: "OEM-TRIGGER-BLOCKED",
+    };
+  });
+
+  const session = {
+    leadId: 7021,
+    mode: "manual",
+    lastSeenLeadOem: null,
+    leadOemBaselineInitialized: true,
+    oem_candidates: [],
+  };
+
+  const handled = await runManagerOemTriggerFlow({
+    api,
+    portalDomain: "audit-flow-not-vin-pick.bitrix24.ru",
+    portalCfg: {},
+    dialogId: "chat-flow-003a",
+    session,
+  });
+
+  assert.equal(handled, false);
+  assert.equal(session.mode, "manual");
+});
+
 test("managerOemTriggerFlow: handles manager OEM trigger and returns true when Cortex is disabled", async () => {
   stubAbcpGet = async () => ({ data: [] });
 
@@ -142,7 +179,7 @@ test("managerOemTriggerFlow: handles manager OEM trigger and returns true when C
     assert.deepEqual(payload, { id: 703 });
     return {
       ID: 703,
-      STATUS_ID: crmSettings.manualStatuses[0],
+      STATUS_ID: VIN_PICK_STATUS_ID,
       [oemField]: "  OEM-TRIGGER-777  ",
     };
   });
@@ -151,6 +188,7 @@ test("managerOemTriggerFlow: handles manager OEM trigger and returns true when C
     leadId: 703,
     mode: "manual",
     lastSeenLeadOem: null,
+    leadOemBaselineInitialized: true,
     oem_candidates: [],
   };
 
@@ -201,7 +239,7 @@ test("managerOemTriggerFlow: processes Cortex response and sends chat message", 
     if (method === "crm.lead.get") {
       return {
         ID: 704,
-        STATUS_ID: crmSettings.manualStatuses[0],
+        STATUS_ID: VIN_PICK_STATUS_ID,
         [oemField]: " OEM-TRIGGER-999 ",
       };
     }
@@ -213,6 +251,7 @@ test("managerOemTriggerFlow: processes Cortex response and sends chat message", 
     leadId: 704,
     mode: "manual",
     lastSeenLeadOem: null,
+    leadOemBaselineInitialized: true,
     oem_candidates: [],
     state: { stage: "NEW", offers: [] },
   };
@@ -265,3 +304,37 @@ test("managerOemTriggerFlow: processes Cortex response and sends chat message", 
   }
 });
 
+test("managerOemTriggerFlow: first pass initializes OEM baseline and does not auto-trigger", async () => {
+  stubAbcpGet = async () => ({ data: [] });
+
+  const oemField = crmSettings.leadFields.OEM;
+  const api = makeApi((method, payload) => {
+    assert.equal(method, "crm.lead.get");
+    assert.deepEqual(payload, { id: 705 });
+    return {
+      ID: 705,
+      STATUS_ID: VIN_PICK_STATUS_ID,
+      [oemField]: "OEM-BASELINE-1",
+    };
+  });
+
+  const session = {
+    leadId: 705,
+    mode: "manual",
+    lastSeenLeadOem: null,
+    leadOemBaselineInitialized: false,
+    oem_candidates: [],
+  };
+
+  const handled = await runManagerOemTriggerFlow({
+    api,
+    portalDomain: "audit-flow-baseline-sync.bitrix24.ru",
+    portalCfg: {},
+    dialogId: "chat-flow-006",
+    session,
+  });
+
+  assert.equal(handled, false);
+  assert.equal(session.lastSeenLeadOem, "OEM-BASELINE-1");
+  assert.equal(session.leadOemBaselineInitialized, true);
+});

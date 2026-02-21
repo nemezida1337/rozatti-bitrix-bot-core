@@ -10,6 +10,7 @@ import { makeBitrixClient } from "../../../core/bitrixClient.js";
 import { logger } from "../../../core/logger.js";
 import { normalizeIncomingMessage } from "../../../core/messageModel.js";
 import { getPortal } from "../../../core/store.js";
+import { safeUpdateLeadAndContact } from "../../crm/leads.js";
 import { saveSession } from "../sessionStore.js";
 
 import { buildContext } from "./context.js";
@@ -18,6 +19,22 @@ import { runCortexTwoPassFlow } from "./flows/cortexTwoPassFlow.js";
 import { runFastOemFlow } from "./flows/fastOemFlow.js";
 import { runManagerOemTriggerFlow } from "./flows/managerOemTriggerFlow.js";
 import { sendChatReplyIfAllowed } from "./shared/chatReply.js";
+import {
+  isFastOemPathEnabled,
+  resolveClassifierModeForDialog,
+  shouldRunShadowForDialog,
+} from "./shared/classificationMode.js";
+import {
+  appendSessionHistoryTurn,
+  buildRepeatFollowupReply,
+  detectRepeatFollowup,
+  inferMessageAuthorRole,
+} from "./shared/historyContext.js";
+import {
+  MARKETPLACE_PRICE_SYNC_REPLY,
+  isMarketplacePriceSyncNotification,
+} from "./shared/serviceNotifications.js";
+import { applyLlmToSession } from "./shared/session.js";
 import {
   normalizeSmallTalkText,
   resolveSmallTalk,
@@ -49,29 +66,139 @@ function toInt(x) {
   return Number.isFinite(n) ? n : null;
 }
 
+function buildGateReply(decision) {
+  if (!decision?.shouldReply) return null;
+
+  if (decision?.replyType === "MANUAL_ACK") {
+    if (decision?.waitReason === "VIN_WAIT_OEM") {
+      return "Принял VIN. Передаю менеджеру на подбор, скоро вернусь с вариантами.";
+    }
+    if (
+      decision?.waitReason === "PHOTO_WAIT_OEM" ||
+      decision?.waitReason === "COMPLEX_WAIT_OEM"
+    ) {
+      return "Принял вложение. Передаю менеджеру на подбор, скоро вернусь с вариантами.";
+    }
+    return "Принял запрос. Передаю менеджеру на подбор.";
+  }
+
+  if (decision?.replyType === "AUTO_START") {
+    return "Принял запрос, начинаю подбор.";
+  }
+
+  if (decision?.replyType === "PRICING_OBJECTION_PRICE") {
+    return "Понял по цене. Могу подобрать дешевле: напишите бюджет или номера вариантов, которые рассмотреть.";
+  }
+
+  if (decision?.replyType === "PRICING_OBJECTION_DELIVERY") {
+    return "Понял по сроку. Могу подобрать быстрее: напишите желаемый срок или номера вариантов.";
+  }
+
+  if (decision?.replyType === "PRICING_FOLLOWUP") {
+    return "Запрос в работе. Чтобы продолжить, выберите номер варианта из списка (можно несколько).";
+  }
+
+  if (decision?.replyType === "PRICING_NEED_SELECTION") {
+    return "Чтобы продолжить, выберите номер варианта из списка (можно несколько).";
+  }
+
+  return null;
+}
+
+function toShortRouteLabel(decision) {
+  if (!decision) return "unknown";
+  if (decision.shouldCallCortex) return "cortex";
+  const reason = decision.replyType || decision.waitReason || "silent";
+  return `gate:${reason}`;
+}
+
+function isTruthy(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function buildShadowPreview({ ctx, gateInput, targetMode }) {
+  const isLegacyTarget = targetMode === "legacy";
+  const { decision: targetDecision } = buildDecision(ctx, {
+    legacyNodeClassificationOverride: isLegacyTarget,
+  });
+
+  if (!isLegacyTarget) {
+    return {
+      targetMode: "cortex",
+      route: toShortRouteLabel(targetDecision),
+      callsCortex: !!targetDecision?.shouldCallCortex,
+      replyType: targetDecision?.replyType || null,
+      waitReason: targetDecision?.waitReason || null,
+      smallTalkIntent: null,
+      serviceNotice: false,
+    };
+  }
+
+  const serviceNotice = isMarketplacePriceSyncNotification({
+    text: ctx?.message?.text,
+    chatEntityType: ctx?.message?.chatEntityType,
+    userFlags: ctx?.message?.userFlags,
+    isSystemLike: !!ctx?.message?.isSystemLike,
+    isForwarded: !!ctx?.message?.isForwarded,
+  });
+
+  const smallTalk =
+    gateInput?.authorType === "client" &&
+    ctx?.message?.text &&
+    !ctx?.hasImage &&
+    (!ctx?.detectedOems || ctx.detectedOems.length === 0)
+      ? resolveSmallTalk(ctx.message.text)
+      : null;
+
+  let route = toShortRouteLabel(targetDecision);
+  if (serviceNotice) route = "service_notice";
+  else if (smallTalk) route = `smalltalk:${smallTalk.intent || "UNKNOWN"}`;
+
+  return {
+    targetMode: "legacy",
+    route,
+    callsCortex: !serviceNotice && !smallTalk && !!targetDecision?.shouldCallCortex,
+    replyType: targetDecision?.replyType || null,
+    waitReason: targetDecision?.waitReason || null,
+    smallTalkIntent: smallTalk?.intent || null,
+    serviceNotice: !!serviceNotice,
+  };
+}
+
 
 function ensureSession(dialogId, session) {
   if (session) {
     session.state = session.state || {};
     if (typeof session.abcp === "undefined") session.abcp = null;
+    if (typeof session.dealId === "undefined") session.dealId = null;
     if (!Array.isArray(session.state.oems)) session.state.oems = [];
     if (!Array.isArray(session.state.offers)) session.state.offers = [];
     if (typeof session.mode === "undefined") session.mode = "auto";
     if (typeof session.manualAckSent === "undefined") session.manualAckSent = false;
     if (!Array.isArray(session.oem_candidates)) session.oem_candidates = [];
     if (typeof session.lastSeenLeadOem === "undefined") session.lastSeenLeadOem = null;
+    if (typeof session.leadOemBaselineInitialized === "undefined") {
+      session.leadOemBaselineInitialized = false;
+    }
+    if (!Array.isArray(session.history)) session.history = [];
     return session;
   }
 
   return {
     dialogId,
     leadId: null,
+    dealId: null,
     phone: null,
     abcp: null,
     mode: "auto",
     manualAckSent: false,
     oem_candidates: [],
     lastSeenLeadOem: null,
+    leadOemBaselineInitialized: false,
+    history: [],
     state: {
       stage: "NEW",
       client_name: null,
@@ -136,6 +263,66 @@ export async function processIncomingBitrixMessage({ body, portal, domain }) {
     if (msgId) session.lastProcessedMessageId = msgId;
     session.lastProcessedAt = Date.now();
 
+    const authorRole = inferMessageAuthorRole(ctx?.message || {});
+    const incomingDealId = toInt(ctx?.message?.dealId);
+    if (incomingDealId && incomingDealId > 0) {
+      session.dealId = incomingDealId;
+    }
+    const classifierMode = resolveClassifierModeForDialog(ctx?.message?.dialogId || dialogId);
+    const legacyNodeClassification = classifierMode === "legacy";
+    const fastOemPathEnabled = isFastOemPathEnabled(process.env, legacyNodeClassification);
+    const shadowEnabled = shouldRunShadowForDialog(ctx?.message?.dialogId || dialogId);
+    const repeatFollowup = detectRepeatFollowup({
+      session,
+      text: ctx?.message?.text,
+      authorRole,
+      hasImage: !!ctx?.hasImage,
+      detectedOems: Array.isArray(ctx?.detectedOems) ? ctx.detectedOems : [],
+    });
+
+    appendSessionHistoryTurn(session, {
+      role: authorRole,
+      text: ctx?.message?.text || "",
+      messageId: msgId,
+      kind: "incoming",
+      ts: Date.now(),
+    });
+
+    const sendAndTrackBotReply = async (message, kind = null) => {
+      const text = String(message || "").trim();
+      if (!text) return;
+
+      const sent = await sendChatReplyIfAllowed({
+        api,
+        portalDomain: ctx.domain,
+        portalCfg: ctx.portal,
+        dialogId: ctx.message.dialogId,
+        leadId: session.leadId,
+        dealId: session.dealId,
+        message: text,
+      });
+      if (!sent) return;
+
+      appendSessionHistoryTurn(session, {
+        role: "bot",
+        text,
+        messageId: null,
+        kind: kind || "bot_reply",
+        ts: Date.now(),
+      });
+    };
+
+    const dealId = incomingDealId || toInt(session?.dealId);
+    if (dealId && dealId > 0) {
+      session.dealId = dealId;
+      saveSession(ctx.domain, ctx.message.dialogId, session);
+      logger.info(
+        { dialogId, dealId: String(dealId) },
+        "[V2] deal-bound chat: bot reply disabled",
+      );
+      return;
+    }
+
     // Полное отключение бота для отдельных статусов (например, "Постоянный клиент")
     const botDisabledByStatus =
       !!ctx?.lead?.statusId &&
@@ -147,6 +334,26 @@ export async function processIncomingBitrixMessage({ body, portal, domain }) {
       logger.info(
         { dialogId, statusId: ctx?.lead?.statusId },
         "[V2] bot disabled by lead status",
+      );
+      return;
+    }
+
+    if (repeatFollowup) {
+      const repeatReply = buildRepeatFollowupReply({
+        session,
+        followup: repeatFollowup,
+      });
+
+      await sendAndTrackBotReply(repeatReply, "repeat_followup");
+      saveSession(ctx.domain, ctx.message.dialogId, session);
+
+      logger.info(
+        {
+          dialogId,
+          promptType: repeatFollowup.promptType,
+          gapTurns: repeatFollowup.gap_turns,
+        },
+        "[V2] handled by repeat followup context",
       );
       return;
     }
@@ -180,8 +387,61 @@ export async function processIncomingBitrixMessage({ body, portal, domain }) {
       return;
     }
 
+    // --- Marketplace service notifications (no OEM/Cortex path) ---
+    if (legacyNodeClassification) {
+      const servicePriceSyncNotice = isMarketplacePriceSyncNotification({
+        text: ctx?.message?.text,
+        chatEntityType: ctx?.message?.chatEntityType,
+        userFlags: ctx?.message?.userFlags,
+        isSystemLike: !!ctx?.message?.isSystemLike,
+        isForwarded: !!ctx?.message?.isForwarded,
+      });
+
+      if (servicePriceSyncNotice) {
+        const serviceReply = MARKETPLACE_PRICE_SYNC_REPLY;
+
+        // Сначала отвечаем в чат (пока лид ещё не в manual-стадии),
+        // затем переводим лид в "Взять в работу!".
+        await sendAndTrackBotReply(serviceReply, "service_notice");
+
+        const serviceLlm = {
+          stage: "IN_WORK",
+          action: "service_notice",
+          reply: serviceReply,
+          oems: [],
+          update_lead_fields: {},
+          product_rows: [],
+          offers: [],
+          chosen_offer_id: null,
+          contact_update: null,
+        };
+
+        await safeUpdateLeadAndContact({
+          portal: ctx.domain,
+          dialogId: ctx.message.dialogId,
+          chatId: ctx.message.chatId,
+          session,
+          llm: serviceLlm,
+          lastUserMessage: ctx.message.text,
+          usedBackend: "RULE_SERVICE_NOTICE",
+        });
+
+        applyLlmToSession(session, serviceLlm);
+        session.mode = "manual";
+        session.manualAckSent = false;
+        saveSession(ctx.domain, ctx.message.dialogId, session);
+
+        logger.info(
+          { dialogId, leadId: session.leadId },
+          "[V2] handled by marketplace service notice (legacy node classifier)",
+        );
+        return;
+      }
+    }
+
     // --- Fast OEM flow (simple OEM query, NEW stage) ---
-    const canRunFastOem = !ctx?.message?.isSystemLike && !ctx?.message?.isForwarded;
+    const canRunFastOem =
+      fastOemPathEnabled && !ctx?.message?.isSystemLike && !ctx?.message?.isForwarded;
     const fastHandled = canRunFastOem
       ? await runFastOemFlow({
           api,
@@ -201,10 +461,58 @@ export async function processIncomingBitrixMessage({ body, portal, domain }) {
     }
 
     // --- Decision gate ---
-    const { gateInput, decision } = buildDecision(ctx);
+    const { gateInput, decision } = buildDecision(ctx, {
+      legacyNodeClassificationOverride: legacyNodeClassification,
+    });
+    const shadowTargetMode = legacyNodeClassification ? "cortex" : "legacy";
+    const shadowPreview = shadowEnabled
+      ? buildShadowPreview({ ctx, gateInput, targetMode: shadowTargetMode })
+      : null;
+    const shouldLogShadowMatch = isTruthy(process.env.HF_CORTEX_SHADOW_LOG_MATCH);
+
+    const logShadowComparison = ({ actualRoute, actualDecision = null }) => {
+      if (!shadowPreview) return;
+
+      const targetCallsCortex = !!shadowPreview.callsCortex;
+      const normalizedActualRoute = String(actualRoute || "unknown");
+      const actualCallsCortex = normalizedActualRoute.startsWith("cortex");
+
+      let diverged = targetCallsCortex !== actualCallsCortex;
+      if (!diverged && !targetCallsCortex && !actualCallsCortex) {
+        diverged = shadowPreview.route !== normalizedActualRoute;
+      }
+
+      if (!diverged && !shouldLogShadowMatch) return;
+
+      const logPayload = {
+        dialogId,
+        messageId: msgId,
+        classifierMode,
+        actualRoute: normalizedActualRoute,
+        actualIntent: actualDecision?.intent || session?.lastCortexDecision?.intent || null,
+        actualAction: actualDecision?.action || session?.lastCortexDecision?.action || null,
+        actualStage: actualDecision?.stage || session?.lastCortexDecision?.stage || null,
+        shadowTargetMode: shadowPreview.targetMode,
+        shadowRoute: shadowPreview.route,
+        shadowCallsCortex: targetCallsCortex,
+        shadowReplyType: shadowPreview.replyType,
+        shadowWaitReason: shadowPreview.waitReason,
+        shadowSmallTalkIntent: shadowPreview.smallTalkIntent,
+        shadowServiceNotice: shadowPreview.serviceNotice,
+        legacyRoute: shadowPreview.targetMode === "legacy" ? shadowPreview.route : null,
+        legacyCallsCortex: shadowPreview.targetMode === "legacy" ? targetCallsCortex : null,
+      };
+
+      if (diverged) {
+        logger.warn(logPayload, "[V2][SHADOW] divergence legacy vs cortex");
+      } else {
+        logger.info(logPayload, "[V2][SHADOW] match legacy vs cortex");
+      }
+    };
 
     // --- Small talk / off-topic / how-to (client-only) ---
     const smallTalk =
+      legacyNodeClassification &&
       gateInput?.authorType === "client" &&
       ctx?.message?.text &&
       !ctx?.hasImage &&
@@ -221,14 +529,7 @@ export async function processIncomingBitrixMessage({ body, portal, domain }) {
       });
 
       if (!isDuplicate) {
-        await sendChatReplyIfAllowed({
-          api,
-          portalDomain: ctx.domain,
-          portalCfg: ctx.portal,
-          dialogId: ctx.message.dialogId,
-          leadId: session.leadId,
-          message: smallTalk.reply,
-        });
+        await sendAndTrackBotReply(smallTalk.reply, "smalltalk");
       }
 
       session.lastSmallTalkIntent = smallTalk.intent;
@@ -251,8 +552,21 @@ export async function processIncomingBitrixMessage({ body, portal, domain }) {
 
     // Если gate запрещает — ничего не делаем (важно: no greetings reply)
     if (!decision?.shouldCallCortex) {
-      // Если нужно зафиксировать one-time ack/manual flag — это будет отдельным этапом
+      if (decision?.mode === "manual" || decision?.mode === "auto") {
+        session.mode = decision.mode;
+      }
+
+      const gateReply = buildGateReply(decision);
+      if (gateReply) {
+        await sendAndTrackBotReply(gateReply, "gate_reply");
+
+        if (decision?.replyType === "MANUAL_ACK") {
+          session.manualAckSent = true;
+        }
+      }
+
       saveSession(ctx.domain, ctx.message.dialogId, session);
+      logShadowComparison({ actualRoute: toShortRouteLabel(decision) });
       return;
     }
 
@@ -266,6 +580,11 @@ export async function processIncomingBitrixMessage({ body, portal, domain }) {
       text: ctx.message.text,
       session,
       baseCtx: "modules/bot/handler/v2",
+    });
+
+    logShadowComparison({
+      actualRoute: session?.lastCortexRoute || "cortex",
+      actualDecision: session?.lastCortexDecision || null,
     });
 
     return;

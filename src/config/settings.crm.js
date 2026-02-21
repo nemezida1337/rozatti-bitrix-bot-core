@@ -45,6 +45,8 @@ export const crmSettings = {
 
     // 2) Взять в работу (ручная обработка менеджером)
     IN_WORK: "UC_ZA04R1",
+    // Сложный подбор (HARD_PICK) маппим в "Взять в работу!"
+    HARD_PICK: "UC_ZA04R1",
 
     // 3) VIN подбор (ручная/полуручная стадия)
     VIN_PICK: "UC_UAO7E9",

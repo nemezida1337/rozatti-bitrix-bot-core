@@ -100,6 +100,8 @@ export async function buildContext({ portal, body, domain: domainHint = null }) 
     message: {
       dialogId: msg?.dialogId || null,
       chatId: msg?.chatId || null,
+      leadId: msg?.leadId || null,
+      dealId: msg?.dealId || null,
       fromUserId: msg?.fromUserId || null,
       messageId: msg?.messageId || null,
       text: msg?.text || "",

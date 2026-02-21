@@ -11,6 +11,7 @@ import { detectOemsFromText, isSimpleOemQuery } from "../../oemDetector.js";
 import { saveSession } from "../../sessionStore.js";
 import { sendChatReplyIfAllowed } from "../shared/chatReply.js";
 import { mapCortexResultToLlmResponse } from "../shared/cortex.js";
+import { appendSessionHistoryTurn } from "../shared/historyContext.js";
 import { normalizeOemCandidates, applyLlmToSession } from "../shared/session.js";
 
 export async function runFastOemFlow({
@@ -32,6 +33,29 @@ export async function runFastOemFlow({
 
   const ctxFast = `${baseCtx}.FAST_OEM_PATH`;
 
+  const sendBotReply = async (message, kind = null) => {
+    const safeMessage = String(message || "").trim();
+    if (!safeMessage) return;
+
+    const sent = await sendChatReplyIfAllowed({
+      api,
+      portalDomain,
+      portalCfg,
+      dialogId,
+      leadId: session.leadId,
+      dealId: session?.dealId || null,
+      message: safeMessage,
+    });
+    if (!sent) return;
+
+    appendSessionHistoryTurn(session, {
+      role: "bot",
+      text: safeMessage,
+      kind: kind || "bot_reply",
+      ts: Date.now(),
+    });
+  };
+
   // ✅ NEW: сохраняем кандидатов OEM (важно для multi-OEM правил в CRM)
   session.oem_candidates = normalizeOemCandidates(detectedOems);
 
@@ -41,14 +65,10 @@ export async function runFastOemFlow({
   );
 
   // 1) Сразу отправляем клиенту "Получил номер, подбираю варианты."
-  await sendChatReplyIfAllowed({
-    api,
-    portalDomain,
-    portalCfg,
-    dialogId,
-    leadId: session.leadId,
-    message: `Получил номера ${session.oem_candidates.join(" и ")}, подбираю варианты.`,
-  });
+  await sendBotReply(
+    `Получил номера ${session.oem_candidates.join(" и ")}, подбираю варианты.`,
+    "fast_oem_ack",
+  );
 
   // 2) Делаем ABCP по найденным OEM
   let abcpData = null;
@@ -61,14 +81,10 @@ export async function runFastOemFlow({
       { ctx: ctxFast, error: String(err) },
       "Ошибка ABCP на быстром пути, передаём на менеджера",
     );
-    await sendChatReplyIfAllowed({
-      api,
-      portalDomain,
-      portalCfg,
-      dialogId,
-      leadId: session.leadId,
-      message: "Не получилось автоматически подобрать варианты, передаю ваш запрос менеджеру.",
-    });
+    await sendBotReply(
+      "Не получилось автоматически подобрать варианты, передаю ваш запрос менеджеру.",
+      "fast_oem_error",
+    );
     saveSession(portalDomain, dialogId, session);
     return true;
   }
@@ -100,14 +116,10 @@ export async function runFastOemFlow({
 
   if (!cortexRaw) {
     logger.warn({ ctx: ctxFast }, "HF-CORTEX вернул null на быстром пути");
-    await sendChatReplyIfAllowed({
-      api,
-      portalDomain,
-      portalCfg,
-      dialogId,
-      leadId: session.leadId,
-      message: "Сервис временно недоступен, подключаю менеджера для помощи.",
-    });
+    await sendBotReply(
+      "Сервис временно недоступен, подключаю менеджера для помощи.",
+      "fast_oem_cortex_fallback",
+    );
     saveSession(portalDomain, dialogId, session);
     return true;
   }
@@ -134,14 +146,7 @@ export async function runFastOemFlow({
   if (detectedOems[0]) session.lastSeenLeadOem = String(detectedOems[0]).trim();
   saveSession(portalDomain, dialogId, session);
 
-  await sendChatReplyIfAllowed({
-    api,
-    portalDomain,
-    portalCfg,
-    dialogId,
-    leadId: session.leadId,
-    message: llm.reply || "…",
-  });
+  await sendBotReply(llm.reply || "…", "fast_oem_reply");
 
   return true;
 }

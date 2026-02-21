@@ -32,7 +32,7 @@ function restoreEnv() {
   }
 }
 
-function makeFetchStub({ botList = [], onCall } = {}) {
+function makeFetchStub({ botList = [], openlinesConfigList = [], onCall } = {}) {
   return async (url, opts = {}) => {
     const method = String(url).match(/\/rest\/(.+)\.json/)?.[1] || "unknown";
     const params = new URLSearchParams(String(opts.body || ""));
@@ -56,6 +56,12 @@ function makeFetchStub({ botList = [], onCall } = {}) {
       return { ok: true, status: 200, async json() { return { result: 9001 }; } };
     }
     if (method === "imbot.command.register") {
+      return { ok: true, status: 200, async json() { return { result: true }; } };
+    }
+    if (method === "imopenlines.config.list.get") {
+      return { ok: true, status: 200, async json() { return { result: openlinesConfigList }; } };
+    }
+    if (method === "imopenlines.config.update") {
       return { ok: true, status: 200, async json() { return { result: true }; } };
     }
     if (method === "imbot.message.add") {
@@ -92,9 +98,10 @@ test.after(() => {
   restoreEnv();
 });
 
-test("register.core: ensureBotRegistered returns early when bot already exists", async () => {
+test("register.core: ensureBotRegistered refreshes existing bot callbacks without command re-register", async () => {
   const domain = "register-core-existing.bitrix24.ru";
   process.env.BOT_CODE = "ram_parts_bot";
+  process.env.BASE_URL = "https://my-bot.example";
   seedPortal(domain);
 
   const called = [];
@@ -106,8 +113,61 @@ test("register.core: ensureBotRegistered returns early when bot already exists",
   await ensureBotRegistered(domain);
 
   assert.ok(called.includes("imbot.bot.list"));
-  assert.equal(called.includes("imbot.register"), false);
+  assert.equal(called.includes("imbot.register"), true);
   assert.equal(called.includes("imbot.command.register"), false);
+});
+
+test("register.core: ensureBotRegistered detects existing bot in object-shaped imbot.bot.list", async () => {
+  const domain = "register-core-existing-object.bitrix24.ru";
+  process.env.BOT_CODE = "ram_parts_bot";
+  process.env.BASE_URL = "https://my-bot.example";
+  seedPortal(domain);
+
+  const called = [];
+  globalThis.fetch = makeFetchStub({
+    botList: {
+      "42": { CODE: "ram_parts_bot" },
+    },
+    onCall: ({ method }) => called.push(method),
+  });
+
+  await ensureBotRegistered(domain);
+
+  assert.equal(called.includes("imbot.register"), true);
+  assert.equal(called.includes("imbot.command.register"), false);
+});
+
+test("register.core: ensureBotRegistered updates open lines welcome bot bindings when stale bot id is configured", async () => {
+  const domain = "register-core-openlines-sync.bitrix24.ru";
+  process.env.BOT_CODE = "ram_parts_bot";
+  process.env.BASE_URL = "https://my-bot.example";
+  seedPortal(domain);
+
+  const called = [];
+  globalThis.fetch = makeFetchStub({
+    botList: [{ CODE: "ram_parts_bot", ID: 9001 }],
+    openlinesConfigList: [
+      {
+        ID: "6",
+        LINE_NAME: "Telegram",
+        WELCOME_BOT_ENABLE: "Y",
+        WELCOME_BOT_ID: "123",
+        WELCOME_BOT_JOIN: "always",
+      },
+      {
+        ID: "7",
+        LINE_NAME: "WhatsApp",
+        WELCOME_BOT_ENABLE: "N",
+        WELCOME_BOT_ID: "0",
+      },
+    ],
+    onCall: ({ method }) => called.push(method),
+  });
+
+  await ensureBotRegistered(domain);
+
+  assert.equal(called.includes("imopenlines.config.list.get"), true);
+  assert.equal(called.includes("imopenlines.config.update"), true);
 });
 
 test("register.core: ensureBotRegistered registers bot and commands with secret in callback URL", async () => {

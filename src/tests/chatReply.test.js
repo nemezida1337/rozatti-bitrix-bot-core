@@ -3,7 +3,11 @@ import http from "node:http";
 import test from "node:test";
 
 import { eventBus } from "../core/eventBus.js";
-import { shouldSendChatReply, sendChatReplyIfAllowed } from "../modules/bot/handler/shared/chatReply.js";
+import {
+  __resetReplyDedupForTests,
+  shouldSendChatReply,
+  sendChatReplyIfAllowed,
+} from "../modules/bot/handler/shared/chatReply.js";
 
 function startFakeBitrix(statusId) {
   const server = http.createServer((req, res) => {
@@ -46,6 +50,10 @@ test("chatReply.shouldSendChatReply: allows when leadId is missing", async () =>
   assert.deepEqual(decision, { canSend: true, reason: "no_leadId" });
 });
 
+test.beforeEach(() => {
+  __resetReplyDedupForTests();
+});
+
 test("chatReply.shouldSendChatReply: allows when manualStatuses is empty", async () => {
   const decision = await shouldSendChatReply({
     portalDomain: "audit-chat-no-manuals.bitrix24.ru",
@@ -55,6 +63,20 @@ test("chatReply.shouldSendChatReply: allows when manualStatuses is empty", async
   });
 
   assert.deepEqual(decision, { canSend: true, reason: "no_manualStatuses" });
+});
+
+test("chatReply.shouldSendChatReply: blocks send for deal-bound chat", async () => {
+  const decision = await shouldSendChatReply({
+    portalDomain: "audit-chat-deal-bound.bitrix24.ru",
+    portalCfg: { baseUrl: "http://127.0.0.1:9/rest", accessToken: "token" },
+    leadId: 1001,
+    dealId: 555,
+    manualStatuses: ["UC_ZA04R1"],
+  });
+
+  assert.equal(decision.canSend, false);
+  assert.equal(decision.reason, "deal_bound:555");
+  assert.equal(decision.dealId, 555);
 });
 
 test("chatReply.shouldSendChatReply: blocks send for manual status", async () => {
@@ -159,6 +181,70 @@ test("chatReply.sendChatReplyIfAllowed: does not send message for manual status"
 
     assert.equal(sent, false);
     assert.equal(sendCalled, false);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("chatReply.sendChatReplyIfAllowed: does not send message for deal-bound chat", async () => {
+  const fake = await startFakeBitrix("PROCESSED");
+  let sendCalled = false;
+  const api = {
+    async call() {
+      sendCalled = true;
+    },
+  };
+
+  try {
+    const sent = await sendChatReplyIfAllowed({
+      api,
+      portalDomain: "audit-chat-send-deal-block.bitrix24.ru",
+      portalCfg: { baseUrl: fake.baseUrl, accessToken: "token" },
+      dialogId: "chat9002d",
+      leadId: 1001,
+      dealId: 777,
+      message: "hello",
+    });
+
+    assert.equal(sent, false);
+    assert.equal(sendCalled, false);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("chatReply.sendChatReplyIfAllowed: skips duplicate reply in dedup window", async () => {
+  const fake = await startFakeBitrix("PROCESSED");
+  const calls = [];
+  const api = {
+    async call(method, params) {
+      calls.push({ method, params });
+      return { result: true };
+    },
+  };
+
+  try {
+    const sent1 = await sendChatReplyIfAllowed({
+      api,
+      portalDomain: "audit-chat-dedup.bitrix24.ru",
+      portalCfg: { baseUrl: fake.baseUrl, accessToken: "token" },
+      dialogId: "chat9010",
+      leadId: 1001,
+      message: "Один и тот же ответ",
+    });
+    const sent2 = await sendChatReplyIfAllowed({
+      api,
+      portalDomain: "audit-chat-dedup.bitrix24.ru",
+      portalCfg: { baseUrl: fake.baseUrl, accessToken: "token" },
+      dialogId: "chat9010",
+      leadId: 1001,
+      message: "Один и тот же ответ",
+    });
+
+    assert.equal(sent1, true);
+    assert.equal(sent2, false);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].method, "imbot.message.add");
   } finally {
     await fake.close();
   }

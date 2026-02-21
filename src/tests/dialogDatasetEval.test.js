@@ -206,7 +206,9 @@ function evaluateCase(row) {
 
   if (kind === "SERVICE_ACK") {
     const isVinLike = !!row?.signals?.isVinLike;
-    if (isVinLike) {
+    const oemsCount = Number(row?.signals?.oemsCount || 0);
+
+    if (isVinLike && oemsCount === 0) {
       const ok =
         gateInput.requestType === "VIN" &&
         decision.mode === "manual" &&
@@ -216,6 +218,16 @@ function evaluateCase(row) {
         expected: "VIN service-ack should map to manual VIN gate",
         actual: `requestType=${gateInput.requestType}, mode=${decision.mode}, shouldCallCortex=${decision.shouldCallCortex}`,
         extra: { waitReason: decision.waitReason },
+      };
+    }
+
+    if (isVinLike && oemsCount > 0) {
+      const ok = gateInput.requestType === "OEM" && decision.shouldCallCortex === true;
+      return {
+        ok,
+        expected: "mixed VIN+OEM service-ack should map to OEM Cortex path",
+        actual: `requestType=${gateInput.requestType}, shouldCallCortex=${decision.shouldCallCortex}`,
+        extra: { mode: decision.mode, oems: gateInput.detectedOems?.length || 0 },
       };
     }
 
@@ -249,6 +261,17 @@ function evaluateCase(row) {
       expected: "repeat followup must have previous client context",
       actual: `hasContext=${hasContext}`,
       extra: { prevClient: row?.history_prev_client_text || null },
+    };
+  }
+
+  if (kind === "TEXT_CONTEXT_FOLLOWUP") {
+    const hasContext = !!String(row?.history_prev_client_text || "").trim();
+    const ok = hasContext && decision.shouldCallCortex === true;
+    return {
+      ok,
+      expected: "contextual followup should keep context and route to Cortex",
+      actual: `hasContext=${hasContext}, shouldCallCortex=${decision.shouldCallCortex}`,
+      extra: { requestType: gateInput.requestType, mode: decision.mode },
     };
   }
 

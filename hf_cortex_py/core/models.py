@@ -17,6 +17,8 @@ class CortexPayload(BaseModel):
     sessionSnapshot: Optional[Dict[str, Any]] = None
     baseContext: Optional[Dict[str, Any]] = None
     injected_abcp: Optional[Dict[str, Any]] = None
+    # Канонические варианты, которые может прислать Node (fallback, когда injected_abcp отсутствует)
+    offers: Optional[List[Dict[str, Any]]] = None
 
 
 class CortexRequest(BaseModel):
@@ -92,6 +94,20 @@ class CortexResult(BaseModel):
 
     # Текст, который нужно отправить клиенту в чат.
     reply: Optional[str] = "Привет! HF-CORTEX онлайн. Интеграция работает."
+
+    # Результат квалификации входящего сообщения (таксономия Cortex).
+    # Примеры: OEM_QUERY / VIN_HARD_PICK / ORDER_STATUS / SERVICE_NOTICE / SMALL_TALK /
+    # CLARIFY_NUMBER_TYPE / LOST / OUT_OF_SCOPE
+    intent: Optional[str] = None
+
+    # Уверенность классификатора/LLM в квалификации (0..1).
+    confidence: Optional[float] = None
+
+    # Причина неоднозначности для диагностик/уточняющего вопроса.
+    ambiguity_reason: Optional[str] = None
+
+    # Нужно ли обязательно уточнение перед действием.
+    requires_clarification: bool = False
 
     # Нормализованные OEM'ы, которые Cortex увидел/подтвердил.
     oems: List[str] = Field(default_factory=list)

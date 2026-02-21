@@ -355,7 +355,7 @@ function mapOfferToPosition(offer) {
   const itemKey = String(offer?.itemKey || "").trim();
   const code = String(offer?.code || "").trim();
 
-  const quantityRaw = Number(offer?.orderQuantity || 1);
+  const quantityRaw = Number(offer?.orderQuantity || offer?.quantity || 1);
   const quantity = Number.isFinite(quantityRaw) && quantityRaw > 0 ? quantityRaw : 1;
 
   if (code) {

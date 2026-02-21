@@ -4,7 +4,7 @@ import os
 from fastapi import FastAPI, Header, HTTPException
 from dotenv import load_dotenv
 
-from core.models import CortexRequest, CortexResponse
+from core.models import CortexRequest, CortexResponse, CortexResult
 from flows.lead_sales.flow import run_lead_sales_flow
 
 # Подтягиваем переменные из .env (OPENAI_API_KEY, HF_CORTEX_PORT, HF_CORTEX_TOKEN и т.д.)
@@ -72,17 +72,37 @@ async def hf_cortex_lead_sales(
     if payload is None:
         raise HTTPException(status_code=400, detail="Missing payload in CortexRequest")
 
-    # 3. Достаём msg / sessionSnapshot / injected_abcp из payload
+    # 3. Достаём msg / sessionSnapshot / injected_abcp / offers из payload
     msg = payload.msg or {}
     session_snapshot = payload.sessionSnapshot or {}
     injected_abcp = payload.injected_abcp
+    payload_offers = payload.offers or []
 
     # 4. Запускаем наш Cortex-поток lead_sales
-    result = run_lead_sales_flow(
-        msg=msg,
-        session=session_snapshot,
-        injected_abcp=injected_abcp,
-    )
+    try:
+        result = run_lead_sales_flow(
+            msg=msg,
+            session=session_snapshot,
+            injected_abcp=injected_abcp,
+            payload_offers=payload_offers,
+        )
+    except Exception:
+        result = CortexResult(
+            action="reply",
+            stage="NEW",
+            reply="Сервис временно недоступен, менеджер скоро подключится.",
+            need_operator=False,
+            oems=[],
+            update_lead_fields={},
+            client_name=None,
+            product_rows=[],
+            product_picks=[],
+            offers=[],
+            chosen_offer_id=None,
+            contact_update=None,
+            meta={},
+            debug={"flow_exception": True},
+        )
 
     # 5. Собираем CortexResponse.
     #    В context оставляем хотя бы sessionSnapshot + то, что Node может захотеть видеть.

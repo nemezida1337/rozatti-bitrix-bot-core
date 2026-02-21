@@ -124,3 +124,63 @@ def test_strict_funnel_contact_does_not_set_delivery_address_from_fio_phone():
 
     assert out.stage == "ADDRESS"
     assert "DELIVERY_ADDRESS" not in (out.update_lead_fields or {})
+
+
+def test_strict_funnel_keeps_lost_stage():
+    result = CortexResult(
+        action="reply",
+        stage="LOST",
+        reply="Не актуально",
+        offers=[Offer(id=1, price=1.0)],
+        chosen_offer_id=1,
+        update_lead_fields={},
+    )
+
+    out = apply_strict_funnel(
+        result,
+        stage_in="CONTACT",
+        msg_text="не нужно",
+        session_snapshot={
+            "state": {
+                "stage": "CONTACT",
+                "chosen_offer_id": 1,
+                "client_name": "Иванов Иван Иванович",
+                "phone": "+79990001122",
+                "delivery_address": "Самовывоз",
+            }
+        },
+    )
+
+    assert out.stage == "LOST"
+    assert out.reply == "Не актуально"
+
+
+def test_strict_funnel_keeps_handover_operator_stage():
+    result = CortexResult(
+        action="handover_operator",
+        stage="HARD_PICK",
+        reply="Передаю менеджеру",
+        need_operator=True,
+        offers=[Offer(id=1, price=1.0)],
+        chosen_offer_id=1,
+        update_lead_fields={},
+    )
+
+    out = apply_strict_funnel(
+        result,
+        stage_in="CONTACT",
+        msg_text="скину VIN",
+        session_snapshot={
+            "state": {
+                "stage": "CONTACT",
+                "chosen_offer_id": 1,
+                "client_name": "Иванов Иван Иванович",
+                "phone": "+79990001122",
+                "delivery_address": "Самовывоз",
+            }
+        },
+    )
+
+    assert out.stage == "HARD_PICK"
+    assert out.action == "handover_operator"
+    assert out.need_operator is True

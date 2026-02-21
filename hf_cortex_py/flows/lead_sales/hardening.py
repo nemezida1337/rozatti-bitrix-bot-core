@@ -23,6 +23,21 @@ def apply_strict_funnel(
     вынесенная из flow.py логика без изменения семантики.
     """
     try:
+        current_stage = str(result.stage or "").upper()
+        current_action = str(result.action or "").lower()
+
+        # Терминальные/эскалационные/уточняющие исходы не перетираем:
+        # если модель/policy уже решила LOST/HARD_PICK/handover_operator/clarification/service, выходим.
+        intent = str(result.intent or "").upper()
+        if (
+            current_stage in {"LOST", "HARD_PICK"}
+            or current_action == "handover_operator"
+            or bool(result.need_operator)
+            or bool(result.requires_clarification)
+            or intent in {"SERVICE_NOTICE", "ORDER_STATUS", "CLARIFY_NUMBER_TYPE"}
+        ):
+            return result
+
         # -------------------------
         # sticky / deterministic chosen_offer_id
         # -------------------------
@@ -128,7 +143,8 @@ def apply_strict_funnel(
 
         # Строгое управление стадиями: после выбора варианта
         chosen = result.chosen_offer_id
-        enforce_now = (stage_in.upper() in ("CONTACT", "ADDRESS")) or (bool(chosen) and stage_in.upper() != "FINAL")
+        stage_in_upper = str(stage_in or "").upper()
+        enforce_now = (stage_in_upper in ("CONTACT", "ADDRESS")) or (bool(chosen) and stage_in_upper != "FINAL")
 
         if enforce_now:
             # 1) Нет полного ФИО или телефона -> CONTACT

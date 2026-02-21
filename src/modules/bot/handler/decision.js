@@ -109,7 +109,7 @@ function inferAuthorType(ctx) {
   return "client";
 }
 
-export function buildDecision(ctx) {
+export function buildDecision(ctx, options = {}) {
   const text = String(ctx?.message?.text || "").trim();
   const hasText = text.length > 0;
 
@@ -126,16 +126,18 @@ export function buildDecision(ctx) {
     (Array.isArray(ctx?.session?.state?.offers) && ctx.session.state.offers.length > 0) ||
     (Array.isArray(ctx?.session?.abcp?.offers) && ctx.session.abcp.offers.length > 0) ||
     (Array.isArray(ctx?.session?.abcp?.items) && ctx.session.abcp.items.length > 0);
+  const hasVinSignal = hasText ? isVinLike(text) : false;
 
   let requestType = "EMPTY";
   if (!hasText && hasImage) {
     requestType = "COMPLEX";
   } else if (!hasText) {
     requestType = "EMPTY";
-  } else if (isVinLike(text)) {
-    requestType = "VIN";
   } else if (detectedOems.length > 0) {
+    // Mixed OEM+VIN кейсы приоритезируем как OEM, чтобы не запирать их в manual до Cortex.
     requestType = "OEM";
+  } else if (hasVinSignal) {
+    requestType = "VIN";
   } else if (hasImage) {
     requestType = "COMPLEX";
   } else {
@@ -157,7 +159,15 @@ export function buildDecision(ctx) {
     manualAckSent: !!ctx?.session?.manualAckSent,
   };
 
-  const decision = leadDecisionGate(gateInput);
+  const withOverride =
+    typeof options?.legacyNodeClassificationOverride === "boolean"
+      ? { legacyNodeClassificationOverride: options.legacyNodeClassificationOverride }
+      : {};
+
+  const decision = leadDecisionGate({
+    ...gateInput,
+    ...withOverride,
+  });
 
   return { gateInput, decision };
 }

@@ -13,6 +13,30 @@ $logOut = Join-Path $logs 'cloudflared_quick.out.log'
 $logErr = Join-Path $logs 'cloudflared_quick.err.log'
 $baseTx = Join-Path $rt   'BASE_URL.txt'
 
+function Get-LastQuickTunnelUrl {
+  param(
+    [string[]]$Paths
+  )
+
+  $rx = [regex]'https?://[a-z0-9\-\.]+\.trycloudflare\.com'
+  $quick = $null
+
+  foreach($p in $Paths){
+    if(Test-Path $p){
+      $t = Get-Content -Raw -LiteralPath $p -ErrorAction SilentlyContinue
+      if($t){
+        $matches = $rx.Matches($t)
+        if($matches.Count -gt 0){
+          # Берём последний URL из файла, иначе можно схватить давно протухший tunnel.
+          $quick = $matches[$matches.Count - 1].Value
+        }
+      }
+    }
+  }
+
+  return $quick
+}
+
 # cloudflared путь
 $cf = Join-Path $work 'bin\cloudflared.exe'
 if (-not (Test-Path $cf)) {
@@ -22,14 +46,7 @@ if (-not (Test-Path $cf)) {
 
 # если cloudflared уже работает — не трогаем, просто пытаемся взять URL
 if (Get-Process cloudflared -ErrorAction SilentlyContinue) {
-  $rx = [regex]'https?://[a-z0-9\-\.]+\.trycloudflare\.com'
-  $quick = $null
-  foreach($p in @($logOut,$logErr)){
-    if(Test-Path $p){
-      $t = Get-Content -Raw -LiteralPath $p -ErrorAction SilentlyContinue
-      if($t){ $m=$rx.Match($t); if($m.Success){ $quick=$m.Value; break } }
-    }
-  }
+  $quick = Get-LastQuickTunnelUrl -Paths @($logOut,$logErr)
   if(-not $quick -and (Test-Path $baseTx)){ $quick=(Get-Content -Raw $baseTx).Trim() }
   if($quick){
     Set-Content -LiteralPath $baseTx -Value $quick -Encoding utf8
@@ -55,14 +72,8 @@ $proc = Start-Process -FilePath $cf -ArgumentList $cfArgs `
 # ждём URL
 $deadline = (Get-Date).AddSeconds(25)
 $quick = $null
-$rx = [regex]'https?://[a-z0-9\-\.]+\.trycloudflare\.com'
 while((Get-Date) -lt $deadline){
-  foreach($p in @($logOut,$logErr)){
-    if(Test-Path $p){
-      $txt = Get-Content -Raw -LiteralPath $p -ErrorAction SilentlyContinue
-      if($txt){ $m=$rx.Match($txt); if($m.Success){ $quick=$m.Value; break } }
-    }
-  }
+  $quick = Get-LastQuickTunnelUrl -Paths @($logOut,$logErr)
   if($quick){ break }
   Start-Sleep -Milliseconds 300
 }

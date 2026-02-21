@@ -11,6 +11,8 @@
  * НИЧЕГО не делает сам, только возвращает решение.
  */
 
+import { isLegacyNodeClassificationEnabled } from "./handler/shared/classificationMode.js";
+
 export function leadDecisionGate({
   // Кто написал сообщение
   authorType, // "client" | "manager" | "system"
@@ -34,6 +36,9 @@ export function leadDecisionGate({
   // Есть ли уже офферы в сессии (важно для PRICING)
   hasOffers = false,
 
+  // Исходный текст (нужен для развилки в PRICING)
+  rawText = "",
+
   // Статусы, где бот должен молчать (ручные)
   manualStatuses = [],
 
@@ -43,6 +48,9 @@ export function leadDecisionGate({
   // Флаги сессии
   sessionMode, // "auto" | "manual"
   manualAckSent = false,
+
+  // Явный override для canary/shadow, иначе берём режим из env.
+  legacyNodeClassificationOverride = null,
 }) {
   const oemCount = Array.isArray(detectedOems) ? detectedOems.length : 0;
   const oemInMessage = oemCount > 0;
@@ -56,6 +64,42 @@ export function leadDecisionGate({
   const manualLock = manualByStatus || manualByAuthor || manualBySession;
 
   const isComplexBySignal = requestType === "VIN" || requestType === "COMPLEX" || hasImage;
+  const normalizedText = String(rawText || "").trim().toLowerCase();
+
+  const offerNumberListRegex = /^\s*\d+(?:\s*[,;/+\-\s]\s*\d+)*\s*$/;
+  const offerIndexRegex = /\b\d{1,2}\b/;
+  const offerHintRegex = /(вариант|варианта|варианты|позици|предложени|предложение|офер|offer)/i;
+  const offerActionRegex =
+    /(беру|выбираю|возьму|подходит|подойдет|пойдет|устроит|устраивает|оформля|заказыва|подтверждаю|давайте|ок)/i;
+  const offerOrdinalRegex = /(перв|втор|трет|четверт|пят|шест|седьм|восьм|девят|десят)\w*/i;
+
+  const pricingObjectionPriceRegex =
+    /(дорог|дорого|дороговато|дешев|скидк|цена|ценник|дороже|дорогая)/i;
+  const pricingObjectionDeliveryRegex =
+    /(долго|долгий|срок|быстрее|когда|ждать|доставка|дней|дня)/i;
+  const pricingFollowupRegex =
+    /(ну что|что там|есть новости|ап\b|up\b|статус|напом|жду ответ|когда ответ)/i;
+
+  const isPricingSelectionText = (() => {
+    if (!normalizedText) return false;
+    if (offerNumberListRegex.test(normalizedText)) return true;
+
+    const hasIndex = offerIndexRegex.test(normalizedText) || offerOrdinalRegex.test(normalizedText);
+    const hasHint = offerHintRegex.test(normalizedText);
+    const hasAction = offerActionRegex.test(normalizedText);
+
+    if (hasAction && (hasHint || hasIndex)) return true;
+    if (hasHint && hasIndex) return true;
+    return false;
+  })();
+
+  const isPricingObjectionPrice = pricingObjectionPriceRegex.test(normalizedText);
+  const isPricingObjectionDelivery = pricingObjectionDeliveryRegex.test(normalizedText);
+  const isPricingFollowup = pricingFollowupRegex.test(normalizedText);
+  const legacyNodeClassification =
+    typeof legacyNodeClassificationOverride === "boolean"
+      ? legacyNodeClassificationOverride
+      : isLegacyNodeClassificationEnabled();
 
   // -----------------------------
   // 0) SYSTEM / invalid
@@ -76,12 +120,16 @@ export function leadDecisionGate({
   // -----------------------------
   // 1) MANUAL LOCK: менеджер в чате или ручная стадия
   //    В этом режиме бот НЕ отвечает и НЕ действует.
-  //    Единственный триггер выхода — OEM в поле лида.
+  //    Выход в AUTO допускаем только для клиентского потока на стадии VIN_PICK,
+  //    когда OEM уже зафиксирован в поле лида.
   // -----------------------------
   if (manualLock) {
+    const isVinPickStage = String(leadStageKey || "").toUpperCase() === "VIN_PICK";
+    const canAutoStartFromManual = !!oemInLead && !manualByAuthor && isVinPickStage;
+
     // Даже если клиент прислал OEM в тексте — молчим.
-    // Ждём, пока менеджер зафиксирует OEM в UF-поле.
-    if (!oemInLead) {
+    // Ждём, пока менеджер зафиксирует OEM в UF-поле на VIN_PICK.
+    if (!canAutoStartFromManual) {
       return {
         mode: "manual",
         waitReason: "WAIT_OEM_MANUAL",
@@ -94,7 +142,7 @@ export function leadDecisionGate({
       };
     }
 
-    // OEM уже в лиде → можно включать AUTO
+    // OEM уже в лиде на VIN_PICK (без менеджерского текста) → можно включать AUTO
     return {
       mode: "auto",
       waitReason: null,
@@ -176,17 +224,38 @@ export function leadDecisionGate({
 
   // 2.3) Обычный текст без OEM.
   // Разрешаем Cortex только на "продажных" стадиях, где это реально нужно:
-  // - PRICING: выбор варианта / уточнения (но только если есть offers)
+  // - PRICING: выбор варианта (клиент явно выбирает оффер)
   // - CONTACT/FINAL: сбор данных / подтверждение
   if (requestType === "TEXT") {
     const stage = String(leadStageKey || "");
+
+    if (legacyNodeClassification && stage === "PRICING" && hasOffers && !isPricingSelectionText) {
+      let replyType = "PRICING_NEED_SELECTION";
+      if (isPricingObjectionPrice) replyType = "PRICING_OBJECTION_PRICE";
+      else if (isPricingObjectionDelivery) replyType = "PRICING_OBJECTION_DELIVERY";
+      else if (isPricingFollowup) replyType = "PRICING_FOLLOWUP";
+
+      return {
+        mode: sessionMode || "auto",
+        waitReason: replyType,
+        shouldReply: true,
+        replyType,
+        shouldCallCortex: false,
+        shouldMoveStage: false,
+        shouldWriteOemToLead: false,
+        oemCandidates: [],
+      };
+    }
+
     const allowByStage =
       stage === "NEW" ||
       stage === "" ||
       stage === "CONTACT" ||
+      stage === "ADDRESS" ||
       stage === "FINAL" ||
       stage === "ABCP_CREATE" ||
-      (stage === "PRICING" && hasOffers);
+      (stage === "PRICING" &&
+        (legacyNodeClassification ? hasOffers && isPricingSelectionText : true));
 
     if (allowByStage) {
       return {

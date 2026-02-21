@@ -1,6 +1,6 @@
 // src/scripts/runScenarioDumps.js
 //
-// Прогоняет 15 сценариев бота (11 small-talk + 3 flow + 1 e2e) и пишет дампы
+// Прогоняет 19 сценариев бота (11 small-talk + 3 flow + 5 e2e) и пишет дампы
 // в data/tmp/scenario-dumps/<timestamp>.
 
 import fs from "node:fs/promises";
@@ -368,7 +368,7 @@ async function runFlowManagerTriggerSuccess(runManagerOemTriggerFlow, crmSetting
   const { api, calls } = makeApiSpy({
     "crm.lead.get": () => ({
       ID: 704,
-      STATUS_ID: crmSettings.manualStatuses[0],
+      STATUS_ID: crmSettings.stageToStatusId.VIN_PICK,
       [oemField]: " OEM-TRIGGER-999 ",
     }),
     "imbot.message.add": () => ({ result: true }),
@@ -583,6 +583,22 @@ function installFetchRouterStub({ cortexBodies = [] } = {}) {
   };
 }
 
+function countFetchCallsByUrl(fetchCalls = [], marker = "") {
+  const mark = String(marker || "");
+  if (!mark) return 0;
+  return fetchCalls.filter((x) => String(x?.url || "").includes(mark)).length;
+}
+
+function getLastImbotMessage(apiCalls = []) {
+  for (let i = apiCalls.length - 1; i >= 0; i -= 1) {
+    const call = apiCalls[i];
+    if (call?.method === "imbot.message.add") {
+      return String(call?.params?.MESSAGE || "");
+    }
+  }
+  return "";
+}
+
 async function runE2eLeadToDealWithAbcp({
   runFastOemFlow,
   runCortexTwoPassFlow,
@@ -742,6 +758,363 @@ async function runE2eLeadToDealWithAbcp({
   };
 }
 
+async function runE2eServiceNoticeInWork({ runCortexTwoPassFlow }) {
+  setCortexEnv({ enabled: "true" });
+
+  const abcpGetCalls = [];
+  const abcpPostCalls = [];
+  stubAbcpGet = async (url, cfg = {}) => {
+    abcpGetCalls.push({ url: String(url || ""), cfg: cloneJson(cfg) });
+    return { data: [] };
+  };
+  stubAbcpPost = async (url, body, cfg = {}) => {
+    abcpPostCalls.push({ url: String(url || ""), body: cloneJson(body), cfg: cloneJson(cfg) });
+    return { data: { status: 1 } };
+  };
+
+  const fetchStub = installFetchRouterStub({
+    cortexBodies: [
+      {
+        result: {
+          action: "reply",
+          stage: "IN_WORK",
+          reply: "Спасибо за уведомление, проверим обновление прайса.",
+          intent: "SERVICE_NOTICE",
+          confidence: 1,
+        },
+      },
+    ],
+  });
+
+  const { api, calls } = makeApiSpy({
+    "imbot.message.add": () => ({ result: true }),
+  });
+
+  const session = {
+    leadId: null,
+    mode: "auto",
+    state: { stage: "NEW", offers: [] },
+  };
+
+  const handled = await runCortexTwoPassFlow({
+    api,
+    portalDomain: "dump-e2e-service-notice.bitrix24.ru",
+    portalCfg: { baseUrl: "http://bitrix.local/rest", accessToken: "token" },
+    dialogId: "dump-e2e-service-notice-001",
+    chatId: "1",
+    text: "Ваш прайс давно не обновлялся на farpost, проверьте packetdated.",
+    session,
+  });
+
+  restoreFetch();
+
+  const fetchCalls = fetchStub.getCalls();
+  const lastMessage = getLastImbotMessage(calls);
+
+  return {
+    id: "e2e_service_notice_in_work",
+    group: "e2e",
+    title: "E2E: service notice -> IN_WORK без ABCP",
+    input: {
+      message: "Ваш прайс давно не обновлялся на farpost, проверьте packetdated.",
+    },
+    output: {
+      handled,
+      session_after: cloneJson(session),
+      api_calls: cloneJson(calls),
+      fetch_calls: fetchCalls,
+      abcp_calls: {
+        get: cloneJson(abcpGetCalls),
+        post: cloneJson(abcpPostCalls),
+      },
+      last_chat_message: lastMessage,
+      cortex_calls_count: countFetchCallsByUrl(fetchCalls, "cortex.test/flow"),
+    },
+    ok:
+      handled === true &&
+      session?.state?.stage === "IN_WORK" &&
+      countFetchCallsByUrl(fetchCalls, "cortex.test/flow") === 1 &&
+      abcpGetCalls.length === 0 &&
+      abcpPostCalls.length === 0 &&
+      /проверим обновление прайса/i.test(lastMessage),
+  };
+}
+
+async function runE2eOrderStatusInWork({ runCortexTwoPassFlow }) {
+  setCortexEnv({ enabled: "true" });
+
+  const abcpGetCalls = [];
+  const abcpPostCalls = [];
+  stubAbcpGet = async (url, cfg = {}) => {
+    abcpGetCalls.push({ url: String(url || ""), cfg: cloneJson(cfg) });
+    return { data: [] };
+  };
+  stubAbcpPost = async (url, body, cfg = {}) => {
+    abcpPostCalls.push({ url: String(url || ""), body: cloneJson(body), cfg: cloneJson(cfg) });
+    return { data: { status: 1 } };
+  };
+
+  const fetchStub = installFetchRouterStub({
+    cortexBodies: [
+      {
+        result: {
+          action: "reply",
+          stage: "IN_WORK",
+          reply: "Принял номер заказа 102123458, проверим статус и вернемся с обновлением.",
+          intent: "ORDER_STATUS",
+          confidence: 1,
+        },
+      },
+    ],
+  });
+
+  const { api, calls } = makeApiSpy({
+    "imbot.message.add": () => ({ result: true }),
+  });
+
+  const session = {
+    leadId: null,
+    mode: "auto",
+    state: { stage: "NEW", offers: [] },
+  };
+
+  const handled = await runCortexTwoPassFlow({
+    api,
+    portalDomain: "dump-e2e-order-status.bitrix24.ru",
+    portalCfg: { baseUrl: "http://bitrix.local/rest", accessToken: "token" },
+    dialogId: "dump-e2e-order-status-001",
+    chatId: "1",
+    text: "Добрый день, номер заказа 102123458, подскажите статус",
+    session,
+  });
+
+  restoreFetch();
+
+  const fetchCalls = fetchStub.getCalls();
+  const lastMessage = getLastImbotMessage(calls);
+
+  return {
+    id: "e2e_order_status_in_work",
+    group: "e2e",
+    title: "E2E: order status -> IN_WORK без ABCP",
+    input: {
+      message: "Добрый день, номер заказа 102123458, подскажите статус",
+    },
+    output: {
+      handled,
+      session_after: cloneJson(session),
+      api_calls: cloneJson(calls),
+      fetch_calls: fetchCalls,
+      abcp_calls: {
+        get: cloneJson(abcpGetCalls),
+        post: cloneJson(abcpPostCalls),
+      },
+      last_chat_message: lastMessage,
+      cortex_calls_count: countFetchCallsByUrl(fetchCalls, "cortex.test/flow"),
+    },
+    ok:
+      handled === true &&
+      session?.state?.stage === "IN_WORK" &&
+      countFetchCallsByUrl(fetchCalls, "cortex.test/flow") === 1 &&
+      abcpGetCalls.length === 0 &&
+      abcpPostCalls.length === 0 &&
+      /проверим статус/i.test(lastMessage),
+  };
+}
+
+async function runE2eAmbiguousNumberClarify({ runCortexTwoPassFlow }) {
+  setCortexEnv({ enabled: "true" });
+
+  const abcpGetCalls = [];
+  const abcpPostCalls = [];
+  stubAbcpGet = async (url, cfg = {}) => {
+    abcpGetCalls.push({ url: String(url || ""), cfg: cloneJson(cfg) });
+    return { data: [] };
+  };
+  stubAbcpPost = async (url, body, cfg = {}) => {
+    abcpPostCalls.push({ url: String(url || ""), body: cloneJson(body), cfg: cloneJson(cfg) });
+    return { data: { status: 1 } };
+  };
+
+  const fetchStub = installFetchRouterStub({
+    cortexBodies: [
+      {
+        result: {
+          action: "reply",
+          stage: "NEW",
+          reply:
+            "Уточните, пожалуйста: это номер заказа или OEM? Если номер заказа - проверю статус.",
+          intent: "CLARIFY_NUMBER_TYPE",
+          requires_clarification: true,
+          ambiguity_reason: "NUMBER_TYPE_AMBIGUOUS",
+          confidence: 1,
+        },
+      },
+    ],
+  });
+
+  const { api, calls } = makeApiSpy({
+    "imbot.message.add": () => ({ result: true }),
+  });
+
+  const session = {
+    leadId: null,
+    mode: "auto",
+    state: { stage: "NEW", offers: [] },
+  };
+
+  const handled = await runCortexTwoPassFlow({
+    api,
+    portalDomain: "dump-e2e-clarify-number.bitrix24.ru",
+    portalCfg: { baseUrl: "http://bitrix.local/rest", accessToken: "token" },
+    dialogId: "dump-e2e-clarify-number-001",
+    chatId: "1",
+    text: "4655",
+    session,
+  });
+
+  restoreFetch();
+
+  const fetchCalls = fetchStub.getCalls();
+  const lastMessage = getLastImbotMessage(calls);
+
+  return {
+    id: "e2e_ambiguous_number_clarify",
+    group: "e2e",
+    title: "E2E: ambiguous number -> clarify",
+    input: {
+      message: "4655",
+    },
+    output: {
+      handled,
+      session_after: cloneJson(session),
+      api_calls: cloneJson(calls),
+      fetch_calls: fetchCalls,
+      abcp_calls: {
+        get: cloneJson(abcpGetCalls),
+        post: cloneJson(abcpPostCalls),
+      },
+      last_chat_message: lastMessage,
+      cortex_calls_count: countFetchCallsByUrl(fetchCalls, "cortex.test/flow"),
+      last_cortex_decision: cloneJson(session?.lastCortexDecision || null),
+    },
+    ok:
+      handled === true &&
+      session?.state?.stage === "NEW" &&
+      session?.lastCortexDecision?.intent === "CLARIFY_NUMBER_TYPE" &&
+      session?.lastCortexDecision?.requires_clarification === true &&
+      countFetchCallsByUrl(fetchCalls, "cortex.test/flow") === 1 &&
+      abcpGetCalls.length === 0 &&
+      abcpPostCalls.length === 0 &&
+      /номер заказа или oem/i.test(lastMessage),
+  };
+}
+
+async function runE2eMixedVinOemRoute({ runCortexTwoPassFlow }) {
+  setCortexEnv({ enabled: "true" });
+
+  const abcpGetCalls = [];
+  const abcpPostCalls = [];
+  stubAbcpGet = async (url, cfg = {}) => {
+    const params = cfg?.params || {};
+    abcpGetCalls.push({ url: String(url || ""), params: cloneJson(params) });
+
+    if (url === "/search/brands") return { data: [{ brand: "BMW" }] };
+    if (url === "/search/articles") {
+      return {
+        data: [{ isOriginal: true, number: params?.number, price: 7700, deadline: "8 дней" }],
+      };
+    }
+    return { data: [] };
+  };
+  stubAbcpPost = async (url, body, cfg = {}) => {
+    abcpPostCalls.push({ url: String(url || ""), body: cloneJson(body), cfg: cloneJson(cfg) });
+    return { data: { status: 1 } };
+  };
+
+  const fetchStub = installFetchRouterStub({
+    cortexBodies: [
+      {
+        result: {
+          action: "abcp_lookup",
+          stage: "PRICING",
+          reply: "Проверяю OEM и VIN, собираю варианты.",
+          intent: "OEM_QUERY",
+          oems: ["52105A67977"],
+        },
+      },
+      {
+        result: {
+          action: "reply",
+          stage: "PRICING",
+          reply: "Нашел вариант по OEM 52105A67977.",
+          intent: "OEM_QUERY",
+          oems: ["52105A67977"],
+          offers: [{ id: 1, code: "CODE-52105", oem: "52105A67977", price: 7700 }],
+        },
+      },
+    ],
+  });
+
+  const { api, calls } = makeApiSpy({
+    "imbot.message.add": () => ({ result: true }),
+  });
+
+  const session = {
+    leadId: null,
+    mode: "auto",
+    state: { stage: "NEW", offers: [] },
+    oem_candidates: [],
+  };
+
+  const text =
+    "Моторчик продольной регулировки водительского сидения, VIN LBV5U5401MMZ97474, артикул 52105A67977";
+  const handled = await runCortexTwoPassFlow({
+    api,
+    portalDomain: "dump-e2e-mixed-vin-oem.bitrix24.ru",
+    portalCfg: { baseUrl: "http://bitrix.local/rest", accessToken: "token" },
+    dialogId: "dump-e2e-mixed-vin-oem-001",
+    chatId: "1",
+    text,
+    session,
+  });
+
+  restoreFetch();
+
+  const fetchCalls = fetchStub.getCalls();
+  const lastMessage = getLastImbotMessage(calls);
+
+  return {
+    id: "e2e_mixed_vin_oem_route",
+    group: "e2e",
+    title: "E2E: mixed VIN+OEM -> OEM/PRICING path",
+    input: { message: text },
+    output: {
+      handled,
+      session_after: cloneJson(session),
+      api_calls: cloneJson(calls),
+      fetch_calls: fetchCalls,
+      abcp_calls: {
+        get: cloneJson(abcpGetCalls),
+        post: cloneJson(abcpPostCalls),
+      },
+      last_chat_message: lastMessage,
+      cortex_calls_count: countFetchCallsByUrl(fetchCalls, "cortex.test/flow"),
+      last_cortex_decision: cloneJson(session?.lastCortexDecision || null),
+    },
+    ok:
+      handled === true &&
+      session?.state?.stage === "PRICING" &&
+      Array.isArray(session?.oem_candidates) &&
+      session.oem_candidates.includes("52105A67977") &&
+      session?.lastCortexDecision?.intent === "OEM_QUERY" &&
+      countFetchCallsByUrl(fetchCalls, "cortex.test/flow") === 2 &&
+      abcpGetCalls.length > 0 &&
+      abcpPostCalls.length === 0 &&
+      /вариант по oem/i.test(lastMessage),
+  };
+}
+
 async function main() {
   await fs.mkdir(OUT_DIR, { recursive: true });
   await fs.mkdir(OUT_CORTEX_DIR, { recursive: true });
@@ -769,6 +1142,26 @@ async function main() {
   e2eResults.push(
     await runE2eLeadToDealWithAbcp({
       runFastOemFlow,
+      runCortexTwoPassFlow,
+    }),
+  );
+  e2eResults.push(
+    await runE2eServiceNoticeInWork({
+      runCortexTwoPassFlow,
+    }),
+  );
+  e2eResults.push(
+    await runE2eOrderStatusInWork({
+      runCortexTwoPassFlow,
+    }),
+  );
+  e2eResults.push(
+    await runE2eAmbiguousNumberClarify({
+      runCortexTwoPassFlow,
+    }),
+  );
+  e2eResults.push(
+    await runE2eMixedVinOemRoute({
       runCortexTwoPassFlow,
     }),
   );

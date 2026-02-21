@@ -32,6 +32,11 @@ function buildDefaultSession() {
     manualAckSent: false,
     oem_candidates: [],
     lastSeenLeadOem: null,
+    // Признак, что lastSeenLeadOem уже синхронизирован с фактическим OEM в лиде.
+    // Нужен, чтобы после рестарта не срабатывать ложно на "старый" OEM.
+    leadOemBaselineInitialized: false,
+    // Короткая история последних turn'ов диалога для контекстных ответов.
+    history: [],
 
     // timestamps
     createdAt: Date.now(),
@@ -74,6 +79,41 @@ function normalizeSession(session) {
   if (merged.lastSeenLeadOem !== null) {
     const v = String(merged.lastSeenLeadOem || "").trim();
     merged.lastSeenLeadOem = v ? v : null;
+  }
+
+  // baseline flag
+  merged.leadOemBaselineInitialized = Boolean(merged.leadOemBaselineInitialized);
+
+  // history
+  if (!Array.isArray(merged.history)) {
+    merged.history = [];
+  } else {
+    const maxHistory = Number(process.env.SESSION_HISTORY_MAX_TURNS || 40);
+    const normalizedHistory = [];
+    for (const item of merged.history) {
+      if (!item || typeof item !== "object") continue;
+      const role = String(item.role || "").trim().toLowerCase();
+      if (!role) continue;
+      const text = String(item.text || "").trim();
+      const textNormalized = String(item.text_normalized || "").trim();
+      if (!text && !textNormalized) continue;
+      normalizedHistory.push({
+        role,
+        text,
+        text_normalized: textNormalized || text.toLowerCase(),
+        message_id:
+          item.message_id === undefined || item.message_id === null
+            ? null
+            : String(item.message_id),
+        kind: item.kind ? String(item.kind) : null,
+        ts: Number(item.ts) || Date.now(),
+      });
+    }
+    if (Number.isFinite(maxHistory) && maxHistory > 0 && normalizedHistory.length > maxHistory) {
+      merged.history = normalizedHistory.slice(-Math.trunc(maxHistory));
+    } else {
+      merged.history = normalizedHistory;
+    }
   }
 
   // timestamps

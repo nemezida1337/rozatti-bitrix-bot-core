@@ -196,6 +196,47 @@ test("safeUpdateLeadAndContact: DELIVERY_ADDRESS is written on ADDRESS stage", a
   }
 });
 
+test("safeUpdateLeadAndContact: HARD_PICK stage maps to IN_WORK status", async () => {
+  const fake = await startFakeBitrix();
+  const domain = "audit-safe-hard-pick-maps-in-work.bitrix24.ru";
+
+  upsertPortal(domain, {
+    domain,
+    baseUrl: fake.baseUrl,
+    accessToken: "token-hard-pick-1",
+    refreshToken: "refresh-hard-pick-1",
+  });
+
+  try {
+    await safeUpdateLeadAndContact({
+      portal: domain,
+      dialogId: "chat-hard-pick-1",
+      chatId: "hard-pick-1",
+      session: { leadId: 1401, state: { stage: "NEW" } },
+      llm: {
+        stage: "HARD_PICK",
+        action: "handover_operator",
+        oems: [],
+        offers: [],
+        chosen_offer_id: null,
+        update_lead_fields: {},
+      },
+      lastUserMessage: "нужен сложный подбор",
+      usedBackend: "HF_CORTEX",
+    });
+
+    const leadUpdate = fake.calls.find((c) => c.method === "crm.lead.update");
+    assert.ok(leadUpdate, "crm.lead.update must be called");
+    assert.equal(
+      leadUpdate.form["fields[STATUS_ID]"],
+      crmSettings.stageToStatusId.IN_WORK,
+      "HARD_PICK must map to IN_WORK status",
+    );
+  } finally {
+    await fake.close();
+  }
+});
+
 test("safeUpdateLeadAndContact: writes UF_OEM when chosen_offer_id points to offer OEM", async () => {
   const fake = await startFakeBitrix();
   const domain = "audit-safe-chosen-oem.bitrix24.ru";

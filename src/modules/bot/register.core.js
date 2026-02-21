@@ -56,6 +56,79 @@ function botEventsUrl() {
   return url;
 }
 
+/**
+ * @param {unknown} botList
+ * @param {string} botCode
+ * @returns {AnyRecord|null}
+ */
+function findBotByCode(botList, botCode) {
+  const code = String(botCode || "").toLowerCase();
+  if (!code) return null;
+
+  if (Array.isArray(botList)) {
+    const hit = botList.find((b) => String(b?.CODE || "").toLowerCase() === code);
+    return hit || null;
+  }
+
+  if (botList && typeof botList === "object") {
+    for (const bot of Object.values(/** @type {AnyRecord} */ (botList))) {
+      if (String(bot?.CODE || "").toLowerCase() === code) return /** @type {AnyRecord} */ (bot);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Поддерживаем привязку welcome-бота в Открытых линиях:
+ * если там остался старый BOT_ID, события в нашего бота не приходят.
+ * @param {{ call: (method: string, params?: Record<string, any>) => Promise<any> }} api
+ * @param {string|number} botId
+ * @param {string} domain
+ */
+async function syncWelcomeBotBindings(api, botId, domain) {
+  try {
+    const list = await api.call("imopenlines.config.list.get", {});
+    const rows = Array.isArray(list) ? list : Object.values(list || {});
+    const target = String(botId);
+    const patched = [];
+
+    for (const row of rows) {
+      const enabled = String(row?.WELCOME_BOT_ENABLE || "N") === "Y";
+      const currentId = String(row?.WELCOME_BOT_ID || "0");
+      if (!enabled || currentId === target) continue;
+
+      await api.call("imopenlines.config.update", {
+        CONFIG_ID: Number(row?.ID),
+        PARAMS: {
+          WELCOME_BOT_ENABLE: "Y",
+          WELCOME_BOT_ID: Number(botId),
+          WELCOME_BOT_JOIN: row?.WELCOME_BOT_JOIN || "always",
+        },
+      });
+
+      patched.push({
+        configId: row?.ID,
+        lineName: row?.LINE_NAME || null,
+        oldBotId: currentId,
+        newBotId: target,
+      });
+    }
+
+    if (patched.length > 0) {
+      logger.info(
+        { domain, patchedCount: patched.length, patched },
+        "Open Lines welcome bot bindings updated",
+      );
+    }
+  } catch (e) {
+    logger.warn(
+      { domain, e: String(e) },
+      "Open Lines welcome bot sync skipped",
+    );
+  }
+}
+
 /** @param {string} domain */
 export async function ensureBotRegistered(domain) {
   const portal = getPortal(domain);
@@ -66,13 +139,11 @@ export async function ensureBotRegistered(domain) {
     accessToken: portal.accessToken,
   });
 
-  // Если бот уже есть — выходим
+  // Проверяем наличие бота заранее: если уже есть, будем только обновлять callback-и.
+  let existedBot = null;
   try {
     const bots = await api.call("imbot.bot.list", {});
-    if (Array.isArray(bots) && bots.find((b) => b.CODE === getBotConfig().CODE)) {
-      logger.info({ domain }, "Bot already registered");
-      return;
-    }
+    existedBot = findBotByCode(bots, getBotConfig().CODE);
   } catch {
     /* ignore */
   }
@@ -99,7 +170,16 @@ export async function ensureBotRegistered(domain) {
 
   try {
     const botId = await api.call("imbot.register", params);
-    logger.info({ domain, code: cfg.CODE, botId }, "Bot registered");
+    logger.info(
+      { domain, code: cfg.CODE, botId, refreshed: !!existedBot },
+      existedBot ? "Bot callbacks refreshed" : "Bot registered",
+    );
+
+    await syncWelcomeBotBindings(api, botId, domain);
+
+    // Для существующего бота команды уже зарегистрированы.
+    // Повторная регистрация команд может плодить дубли в некоторых инсталляциях.
+    if (existedBot) return;
 
     // Регистрируем команды как в EchoBot
     const lang = [{ LANGUAGE_ID: "en", TITLE: "Show help", PARAMS: "" }];

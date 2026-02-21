@@ -12,6 +12,7 @@ import { createAbcpOrderFromSession } from "../../../external/pricing/abcpOrder.
 import { saveSession } from "../../sessionStore.js";
 import { sendChatReplyIfAllowed } from "../shared/chatReply.js";
 import { mapCortexResultToLlmResponse } from "../shared/cortex.js";
+import { appendSessionHistoryTurn } from "../shared/historyContext.js";
 import { normalizeOemCandidates, applyLlmToSession } from "../shared/session.js";
 
 const ADDRESS_WORD_RE =
@@ -125,6 +126,13 @@ function shouldCreateAbcpOrder(llm, session) {
   const llmStage = String(llm?.stage || "").toUpperCase();
   const sessionStage = String(session?.state?.stage || "").toUpperCase();
   const stage = llmStage || sessionStage;
+  const action = String(llm?.action || "").toLowerCase();
+
+  // Заказы не создаём на эскалации/потере, даже если технически есть выбранный оффер.
+  if (llm?.need_operator === true) return false;
+  if (action === "handover_operator") return false;
+  if (stage === "LOST") return false;
+
   if (stage !== "ABCP_CREATE" && stage !== "FINAL") return false;
 
   if (session?.lastAbcpOrder && Array.isArray(session.lastAbcpOrder.orderNumbers)) {
@@ -136,6 +144,20 @@ function shouldCreateAbcpOrder(llm, session) {
   if (!hasDeliveryAddress(llm, session)) return false;
 
   return true;
+}
+
+function setLastCortexDecision(session, llm, pass) {
+  if (!session || !llm) return;
+  session.lastCortexDecision = {
+    pass: pass || null,
+    intent: llm.intent || null,
+    action: llm.action || null,
+    stage: llm.stage || null,
+    confidence: Number.isFinite(Number(llm.confidence)) ? Number(llm.confidence) : null,
+    requires_clarification: !!llm.requires_clarification,
+    need_operator: !!llm.need_operator,
+    at: Date.now(),
+  };
 }
 
 async function tryConvertLeadAfterAbcpOrder({
@@ -278,6 +300,28 @@ export async function runCortexTwoPassFlow({
   baseCtx = "modules/bot/handler_llm_manager",
 }) {
   const ctx = `${baseCtx}.processIncomingBitrixMessage`;
+  const sendBotReply = async (message, kind = null) => {
+    const safeMessage = String(message || "").trim();
+    if (!safeMessage) return;
+
+    const sent = await sendChatReplyIfAllowed({
+      api,
+      portalDomain,
+      portalCfg,
+      dialogId,
+      leadId: session.leadId,
+      dealId: session?.dealId || null,
+      message: safeMessage,
+    });
+    if (!sent) return;
+
+    appendSessionHistoryTurn(session, {
+      role: "bot",
+      text: safeMessage,
+      kind: kind || "bot_reply",
+      ts: Date.now(),
+    });
+  };
 
   // ✅ если есть offers в сессии — прокидываем их в Cortex, чтобы выбор по id был стабильным
   const sessionOffers =
@@ -305,19 +349,21 @@ export async function runCortexTwoPassFlow({
 
   if (!cortexRaw1) {
     logger.warn({ ctx }, "HF-CORTEX вернул null, шлём fallback");
-    await sendChatReplyIfAllowed({
-      api,
-      portalDomain,
-      portalCfg,
-      dialogId,
-      leadId: session.leadId,
-      message: "Сервис временно недоступен, менеджер скоро подключится.",
-    });
+    session.lastCortexDecision = null;
+    await sendBotReply(
+      "Сервис временно недоступен, менеджер скоро подключится.",
+      "cortex_fallback_first_pass",
+    );
+    session.lastCortexRoute = "cortex_fallback_first_pass";
     saveSession(portalDomain, dialogId, session);
     return true;
   }
 
   let llm1 = mapCortexResultToLlmResponse(cortexRaw1);
+  setLastCortexDecision(session, llm1, "first");
+  // Синхронизируем актуальные контакт/адрес/выбор в session до попытки авто-заказа.
+  // Иначе TS fallback может не увидеть телефон/адрес из текущего сообщения.
+  applyLlmToSession(session, llm1);
   llm1 = await tryCreateAbcpOrderIfNeeded({
     llm: llm1,
     api,
@@ -343,16 +389,9 @@ export async function runCortexTwoPassFlow({
   });
 
   applyLlmToSession(session, llm1);
+  session.lastCortexRoute = "cortex_first_pass_reply";
+  await sendBotReply(llm1.reply || "…", "cortex_first_pass_reply");
   saveSession(portalDomain, dialogId, session);
-
-  await sendChatReplyIfAllowed({
-    api,
-    portalDomain,
-    portalCfg,
-    dialogId,
-    leadId: session.leadId,
-    message: llm1.reply || "…",
-  });
 
   // 5) ВТОРОЙ ПРОХОД: ABCP → HF-CORTEX (офферы)
   if (llm1.action === "abcp_lookup" && Array.isArray(llm1.oems) && llm1.oems.length > 0) {
@@ -397,11 +436,15 @@ export async function runCortexTwoPassFlow({
 
         if (!cortexRaw2) {
           logger.warn({ ctx: ctxAbcp }, "Второй вызов Cortex вернул null");
+          session.lastCortexRoute = "cortex_second_pass_null";
           saveSession(portalDomain, dialogId, session);
           return true;
         }
 
         let llm2 = mapCortexResultToLlmResponse(cortexRaw2);
+        setLastCortexDecision(session, llm2, "second");
+        // Синхронизация перед авто-заказом на втором проходе (ABCP_CREATE/FINAL).
+        applyLlmToSession(session, llm2);
         llm2 = await tryCreateAbcpOrderIfNeeded({
           llm: llm2,
           api,
@@ -419,6 +462,7 @@ export async function runCortexTwoPassFlow({
             { ctx: ctxAbcp, llm2 },
             "Второй проход Cortex не дал прогресса — не отправляем повторный ответ клиенту",
           );
+          session.lastCortexRoute = "cortex_second_pass_no_progress";
           saveSession(portalDomain, dialogId, session);
           return true;
         }
@@ -434,18 +478,12 @@ export async function runCortexTwoPassFlow({
         });
 
         applyLlmToSession(session, llm2);
+        session.lastCortexRoute = "cortex_second_pass_reply";
+        await sendBotReply(llm2.reply || "…", "cortex_second_pass_reply");
         saveSession(portalDomain, dialogId, session);
-
-        await sendChatReplyIfAllowed({
-          api,
-          portalDomain,
-          portalCfg,
-          dialogId,
-          leadId: session.leadId,
-          message: llm2.reply || "…",
-        });
       } else {
         logger.info({ ctx: ctxAbcp }, "ABCP не вернул данных, второй проход Cortex пропущен");
+        session.lastCortexRoute = "cortex_second_pass_skipped_no_abcp";
         saveSession(portalDomain, dialogId, session);
       }
     } catch (err) {
@@ -453,14 +491,11 @@ export async function runCortexTwoPassFlow({
         { ctx: ctxAbcp, error: String(err) },
         "Ошибка ABCP/Cortex на втором проходе, передаём на менеджера",
       );
-      await sendChatReplyIfAllowed({
-        api,
-        portalDomain,
-        portalCfg,
-        dialogId,
-        leadId: session.leadId,
-        message: "Не получилось автоматически подобрать варианты, передаю ваш запрос менеджеру.",
-      });
+      await sendBotReply(
+        "Не получилось автоматически подобрать варианты, передаю ваш запрос менеджеру.",
+        "cortex_second_pass_error",
+      );
+      session.lastCortexRoute = "cortex_second_pass_error";
       saveSession(portalDomain, dialogId, session);
     }
   }

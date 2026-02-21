@@ -33,11 +33,27 @@ test("leadDecisionGate: manual lock without OEM in lead waits silently", () => {
   assert.deepEqual(d.oemCandidates, ["AAA111"]);
 });
 
-test("leadDecisionGate: manual lock with OEM in lead switches to auto", () => {
+test("leadDecisionGate: manager message in manual lock stays silent even when OEM exists", () => {
   const d = leadDecisionGate({
     authorType: "manager",
     requestType: "TEXT",
     oemInLead: "OEM-SET",
+    leadStageKey: "VIN_PICK",
+    sessionMode: "manual",
+  });
+
+  assert.equal(d.mode, "manual");
+  assert.equal(d.waitReason, "WAIT_OEM_MANUAL");
+  assert.equal(d.shouldReply, false);
+  assert.equal(d.shouldCallCortex, false);
+});
+
+test("leadDecisionGate: client flow on VIN_PICK with OEM in lead switches to auto", () => {
+  const d = leadDecisionGate({
+    authorType: "client",
+    requestType: "TEXT",
+    oemInLead: "OEM-SET",
+    leadStageKey: "VIN_PICK",
     sessionMode: "manual",
   });
 
@@ -118,7 +134,7 @@ test("leadDecisionGate: multi OEM in message does not write OEM field", () => {
   assert.equal(d.shouldWriteOemToLead, false);
 });
 
-test("leadDecisionGate: text on pricing without offers is ignored", () => {
+test("leadDecisionGate: text on pricing without offers calls Cortex (cortex classifier mode)", () => {
   const d = leadDecisionGate({
     authorType: "client",
     requestType: "TEXT",
@@ -127,14 +143,16 @@ test("leadDecisionGate: text on pricing without offers is ignored", () => {
     sessionMode: "auto",
   });
 
-  assert.equal(d.waitReason, "NO_OEM_TEXT");
-  assert.equal(d.shouldCallCortex, false);
+  assert.equal(d.waitReason, null);
+  assert.equal(d.shouldCallCortex, true);
+  assert.equal(d.shouldMoveStage, true);
 });
 
 test("leadDecisionGate: text on pricing with offers calls Cortex", () => {
   const d = leadDecisionGate({
     authorType: "client",
     requestType: "TEXT",
+    rawText: "беру вариант 2",
     leadStageKey: "PRICING",
     hasOffers: true,
     sessionMode: "auto",
@@ -143,6 +161,110 @@ test("leadDecisionGate: text on pricing with offers calls Cortex", () => {
   assert.equal(d.shouldReply, true);
   assert.equal(d.shouldCallCortex, true);
   assert.equal(d.shouldMoveStage, true);
+});
+
+test("leadDecisionGate: pricing objection by price calls Cortex (cortex classifier mode)", () => {
+  const d = leadDecisionGate({
+    authorType: "client",
+    requestType: "TEXT",
+    rawText: "дороговато",
+    leadStageKey: "PRICING",
+    hasOffers: true,
+    sessionMode: "auto",
+  });
+
+  assert.equal(d.shouldReply, true);
+  assert.equal(d.replyType, null);
+  assert.equal(d.shouldCallCortex, true);
+  assert.equal(d.shouldMoveStage, true);
+});
+
+test("leadDecisionGate: pricing objection by delivery calls Cortex (cortex classifier mode)", () => {
+  const d = leadDecisionGate({
+    authorType: "client",
+    requestType: "TEXT",
+    rawText: "и долго",
+    leadStageKey: "PRICING",
+    hasOffers: true,
+    sessionMode: "auto",
+  });
+
+  assert.equal(d.shouldReply, true);
+  assert.equal(d.replyType, null);
+  assert.equal(d.shouldCallCortex, true);
+  assert.equal(d.shouldMoveStage, true);
+});
+
+test("leadDecisionGate: pricing followup calls Cortex (cortex classifier mode)", () => {
+  const d = leadDecisionGate({
+    authorType: "client",
+    requestType: "TEXT",
+    rawText: "ну что там по заказу",
+    leadStageKey: "PRICING",
+    hasOffers: true,
+    sessionMode: "auto",
+  });
+
+  assert.equal(d.shouldReply, true);
+  assert.equal(d.replyType, null);
+  assert.equal(d.shouldCallCortex, true);
+  assert.equal(d.shouldMoveStage, true);
+});
+
+test("leadDecisionGate: pricing objection keeps legacy short reply when NODE_LEGACY_CLASSIFICATION=1", () => {
+  const prev = process.env.NODE_LEGACY_CLASSIFICATION;
+  process.env.NODE_LEGACY_CLASSIFICATION = "1";
+
+  try {
+    const d = leadDecisionGate({
+      authorType: "client",
+      requestType: "TEXT",
+      rawText: "дороговато",
+      leadStageKey: "PRICING",
+      hasOffers: true,
+      sessionMode: "auto",
+    });
+
+    assert.equal(d.shouldReply, true);
+    assert.equal(d.replyType, "PRICING_OBJECTION_PRICE");
+    assert.equal(d.shouldCallCortex, false);
+    assert.equal(d.shouldMoveStage, false);
+  } finally {
+    if (prev == null) delete process.env.NODE_LEGACY_CLASSIFICATION;
+    else process.env.NODE_LEGACY_CLASSIFICATION = prev;
+  }
+});
+
+test("leadDecisionGate: legacy override enforces legacy branch without env changes", () => {
+  const d = leadDecisionGate({
+    authorType: "client",
+    requestType: "TEXT",
+    rawText: "дороговато",
+    leadStageKey: "PRICING",
+    hasOffers: true,
+    sessionMode: "auto",
+    legacyNodeClassificationOverride: true,
+  });
+
+  assert.equal(d.shouldReply, true);
+  assert.equal(d.replyType, "PRICING_OBJECTION_PRICE");
+  assert.equal(d.shouldCallCortex, false);
+  assert.equal(d.shouldMoveStage, false);
+});
+
+test("leadDecisionGate: colloquial option choose text calls Cortex in PRICING", () => {
+  const d = leadDecisionGate({
+    authorType: "client",
+    requestType: "TEXT",
+    rawText: "второй пойдет?",
+    leadStageKey: "PRICING",
+    hasOffers: true,
+    sessionMode: "auto",
+  });
+
+  assert.equal(d.shouldReply, true);
+  assert.equal(d.shouldCallCortex, true);
+  assert.equal(d.replyType, null);
 });
 
 test("leadDecisionGate: text on NEW stage calls Cortex", () => {

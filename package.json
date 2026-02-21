@@ -14,8 +14,11 @@
     "test:coverage": "node --test --experimental-test-coverage",
     "dump:scenarios": "node src/scripts/runScenarioDumps.js",
     "dump:dialogs": "node src/scripts/dumpBitrixDialogs.js",
+    "convert:telegram-raw": "node src/scripts/convertRawTelegramChats.js",
     "build:dialog-cases": "node src/scripts/buildDialogCases.js",
+    "merge:dialog-cases": "node src/scripts/mergeDialogCaseDatasets.js",
     "test:dialog-dataset": "node --test src/tests/dialogDatasetEval.test.js",
+    "test:dialog-action-replay": "node --test src/tests/dialogActionContractReplay.test.js",
     "test:e2e-scenarios": "node src/scripts/runScenarioDumps.js"
   },
   "dependencies": {

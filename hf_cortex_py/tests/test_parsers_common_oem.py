@@ -39,3 +39,16 @@ def test_extract_oem_from_text_ignores_vin_and_picks_best_token():
     # Empty / unsupported input
     assert extract_oem_from_text("") is None
     assert extract_oem_from_text("VIN WDB2110421A123456") is None
+
+
+def test_extract_oem_from_text_ignores_url_and_order_number_context():
+    assert (
+        extract_oem_from_text("https://site.ru/?utm_source=chat30792&utm_campaign=QWERTY123456")
+        is None
+    )
+    assert extract_oem_from_text("Добрый день, номер заказа 102123458") is None
+
+
+def test_extract_oem_from_text_ignores_pure_word_tokens():
+    assert extract_oem_from_text("LFV3B20V0P3507500 Volkswagen Talagon") is None
+    assert extract_oem_from_text("Volkswagen Talagon") is None

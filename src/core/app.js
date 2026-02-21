@@ -20,19 +20,32 @@ export async function buildServer() {
     try {
       const rawBody = typeof body === "string" ? body : String(body ?? "");
       const params = new URLSearchParams(rawBody);
+      const blockedPathKeys = new Set(["__proto__", "prototype", "constructor"]);
       /** @type {AnyObject} */
       const out = {};
       // Преобразуем php-style ключи вида a[b][c] -> out.a.b.c
       for (const [k, v] of params) {
-        const keys = k.replace(/\]/g, "").split("["); // "auth[access_token]" -> ["auth","access_token"]
+        const keys = k
+          .replace(/\]/g, "")
+          .split("[")
+          .map((x) => String(x || "").trim())
+          .filter(Boolean); // "auth[access_token]" -> ["auth","access_token"]
+        if (!keys.length) continue;
+        if (keys.some((key) => blockedPathKeys.has(key))) continue;
+
         /** @type {AnyObject} */
         let cur = out;
         for (let i = 0; i < keys.length - 1; i++) {
           const key = keys[i];
-          if (!(key in cur)) cur[key] = {};
+          const hasOwn = Object.prototype.hasOwnProperty.call(cur, key);
+          if (!hasOwn || typeof cur[key] !== "object" || cur[key] === null || Array.isArray(cur[key])) {
+            cur[key] = {};
+          }
           cur = /** @type {AnyObject} */ (cur[key]);
         }
-        cur[keys[keys.length - 1]] = v;
+        const leafKey = keys[keys.length - 1];
+        if (blockedPathKeys.has(leafKey)) continue;
+        cur[leafKey] = v;
       }
       done(null, out);
     } catch (e) {

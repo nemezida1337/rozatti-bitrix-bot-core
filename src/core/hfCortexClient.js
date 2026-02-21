@@ -71,7 +71,16 @@ export async function callCortexLeadSales(payload, logger) {
     HF_CORTEX_URL,
     HF_CORTEX_TIMEOUT_MS,
     HF_CORTEX_API_KEY,
+    HF_CORTEX_TOKEN,
   } = process.env;
+
+  const authToken = HF_CORTEX_TOKEN || HF_CORTEX_API_KEY;
+
+  if (HF_CORTEX_TOKEN && HF_CORTEX_API_KEY && HF_CORTEX_TOKEN !== HF_CORTEX_API_KEY) {
+    logger?.warn(
+      "[HF-CORTEX] both HF_CORTEX_TOKEN and HF_CORTEX_API_KEY are set and differ; using HF_CORTEX_TOKEN",
+    );
+  }
 
   // Если Cortex выключен — сразу выходим
   if (HF_CORTEX_ENABLED !== "true") {
@@ -110,12 +119,12 @@ export async function callCortexLeadSales(payload, logger) {
       signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
-        ...(HF_CORTEX_API_KEY
+        ...(authToken
           ? {
               // Единый режим авторизации Node → HF-CORTEX (рекомендуемый)
-              "X-HF-CORTEX-TOKEN": HF_CORTEX_API_KEY,
+              "X-HF-CORTEX-TOKEN": authToken,
               // Совместимость со старым режимом
-              Authorization: `Bearer ${HF_CORTEX_API_KEY}`,
+              Authorization: `Bearer ${authToken}`,
             }
           : {}),
       },

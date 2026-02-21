@@ -64,3 +64,9 @@ test("detectOemsFromText ignores explicit order number phrase", () => {
   const oems = detectOemsFromText(text);
   assert.deepEqual(oems, []);
 });
+
+test("detectOemsFromText ignores pure word tokens in VIN-like descriptions", () => {
+  const text = "LFV3B20V0P3507500 Volkswagen Talagon";
+  const oems = detectOemsFromText(text);
+  assert.deepEqual(oems, []);
+});

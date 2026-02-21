@@ -30,6 +30,7 @@ export function normalizeIncomingMessage(body) {
   try {
     if (!body) return null;
     const params = getParams(body);
+    const { leadId, dealId } = extractCrmBindings(params, body);
 
     const portal =
       body._portal ||
@@ -58,6 +59,8 @@ export function normalizeIncomingMessage(body) {
       attachments: params?.FILES || [],
       isForwarded,
       isSystemLike,
+      leadId,
+      dealId,
       raw: body,
     };
   } catch (err) {
@@ -164,6 +167,53 @@ function detectSystemLikeMessage({ params, text }) {
   const hasServiceLexemes = SERVICE_LEXEMES_RE.test(t);
 
   return hasFramedEnvelope && (hasHeader || hasServiceLexemes);
+}
+
+function normalizeEntityId(raw) {
+  const digits = String(raw || "").replace(/\D/g, "");
+  if (!digits) return null;
+  const n = Number(digits);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return String(Math.trunc(n));
+}
+
+function extractEntityIdFromRaw(raw, token) {
+  const text = String(raw || "");
+  if (!text) return null;
+  const re = new RegExp(`(?:^|\\|)${token}\\|(\\d+)`, "i");
+  const m = text.match(re);
+  return normalizeEntityId(m?.[1]);
+}
+
+function extractCrmBindings(params, body = null) {
+  const data1 = params?.CHAT_ENTITY_DATA_1 || params?.chat_entity_data_1 || "";
+  const data2 = params?.CHAT_ENTITY_DATA_2 || params?.chat_entity_data_2 || "";
+  const chatData1 =
+    body?.data?.CHAT?.ENTITY_DATA_1 ||
+    body?.data?.CHAT?.entity_data_1 ||
+    body?.data?.CHAT?.entityData1 ||
+    "";
+  const chatData2 =
+    body?.data?.CHAT?.ENTITY_DATA_2 ||
+    body?.data?.CHAT?.entity_data_2 ||
+    body?.data?.CHAT?.entityData2 ||
+    "";
+
+  const leadId =
+    extractEntityIdFromRaw(data1, "LEAD") ||
+    extractEntityIdFromRaw(data2, "LEAD") ||
+    extractEntityIdFromRaw(chatData1, "LEAD") ||
+    extractEntityIdFromRaw(chatData2, "LEAD") ||
+    null;
+
+  const dealId =
+    extractEntityIdFromRaw(data1, "DEAL") ||
+    extractEntityIdFromRaw(data2, "DEAL") ||
+    extractEntityIdFromRaw(chatData1, "DEAL") ||
+    extractEntityIdFromRaw(chatData2, "DEAL") ||
+    null;
+
+  return { leadId, dealId };
 }
 
 function extractFromUserId(body) {

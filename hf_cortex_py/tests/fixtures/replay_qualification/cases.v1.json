@@ -1,0 +1,296 @@
+{
+  "version": "2026-02-21",
+  "description": "Regression replay for deterministic qualification in lead_sales flow.",
+  "key_intents": [
+    "OEM_QUERY",
+    "VIN_HARD_PICK",
+    "CLARIFY_NUMBER_TYPE",
+    "LOST"
+  ],
+  "min_accuracy_by_intent": {
+    "OEM_QUERY": 1.0,
+    "VIN_HARD_PICK": 1.0,
+    "CLARIFY_NUMBER_TYPE": 1.0,
+    "LOST": 1.0
+  },
+  "cases": [
+    {
+      "id": "service_notice_farpost_packetdated",
+      "intent_class": "SERVICE_NOTICE",
+      "msg": {
+        "text": "Ваш прайс давно не обновлялся на farpost, проверьте packetdated."
+      },
+      "session": {
+        "state": {
+          "stage": "NEW"
+        }
+      },
+      "llm_stub": {
+        "action": "reply",
+        "stage": "CONTACT",
+        "reply": "Напишите ФИО и телефон"
+      },
+      "expected": {
+        "intent": "SERVICE_NOTICE",
+        "action": "reply",
+        "stage": "IN_WORK",
+        "requires_clarification": false,
+        "reply_contains": "проверим обновление прайса"
+      }
+    },
+    {
+      "id": "order_status_ru",
+      "intent_class": "ORDER_STATUS",
+      "msg": {
+        "text": "Добрый день, номер заказа 102123458, подскажите статус"
+      },
+      "session": {
+        "state": {
+          "stage": "NEW"
+        }
+      },
+      "llm_stub": {
+        "action": "reply",
+        "stage": "CONTACT",
+        "reply": ""
+      },
+      "expected": {
+        "intent": "ORDER_STATUS",
+        "action": "reply",
+        "stage": "IN_WORK",
+        "requires_clarification": false,
+        "reply_contains": "проверим статус"
+      }
+    },
+    {
+      "id": "order_status_en",
+      "intent_class": "ORDER_STATUS",
+      "msg": {
+        "text": "Hi, order number 102123458, please check status"
+      },
+      "session": {
+        "state": {
+          "stage": "NEW"
+        }
+      },
+      "llm_stub": {
+        "action": "reply",
+        "stage": "CONTACT",
+        "reply": "ok"
+      },
+      "expected": {
+        "intent": "ORDER_STATUS",
+        "action": "reply",
+        "stage": "IN_WORK",
+        "requires_clarification": false
+      }
+    },
+    {
+      "id": "clarify_number_new",
+      "intent_class": "CLARIFY_NUMBER_TYPE",
+      "msg": {
+        "text": "102123458"
+      },
+      "session": {
+        "state": {
+          "stage": "NEW"
+        }
+      },
+      "llm_stub": {
+        "action": "reply",
+        "stage": "CONTACT",
+        "reply": "ok"
+      },
+      "expected": {
+        "intent": "CLARIFY_NUMBER_TYPE",
+        "action": "reply",
+        "stage": "NEW",
+        "requires_clarification": true,
+        "ambiguity_reason": "NUMBER_TYPE_AMBIGUOUS",
+        "reply_contains": "номер заказа или oem"
+      }
+    },
+    {
+      "id": "clarify_number_contact_stage_guard",
+      "intent_class": "CLARIFY_NUMBER_TYPE",
+      "msg": {
+        "text": "61217726563"
+      },
+      "session": {
+        "state": {
+          "stage": "CONTACT"
+        }
+      },
+      "llm_stub": {
+        "action": "reply",
+        "stage": "FINAL",
+        "reply": "Оформляю заказ"
+      },
+      "expected": {
+        "intent": "CLARIFY_NUMBER_TYPE",
+        "action": "reply",
+        "stage": "NEW",
+        "requires_clarification": true,
+        "ambiguity_reason": "NUMBER_TYPE_AMBIGUOUS",
+        "reply_contains": "номер заказа или oem"
+      }
+    },
+    {
+      "id": "vin_hard_pick",
+      "intent_class": "VIN_HARD_PICK",
+      "msg": {
+        "text": "VIN WDB2110421A123456"
+      },
+      "session": {
+        "state": {
+          "stage": "NEW"
+        }
+      },
+      "llm_stub": {
+        "action": "reply",
+        "stage": "NEW",
+        "reply": ""
+      },
+      "expected": {
+        "intent": "VIN_HARD_PICK",
+        "action": "handover_operator",
+        "stage": "HARD_PICK",
+        "need_operator": true,
+        "requires_clarification": false
+      }
+    },
+    {
+      "id": "photo_hard_pick",
+      "intent_class": "VIN_HARD_PICK",
+      "msg": {
+        "text": "Есть фото детали, скину картинку в чат"
+      },
+      "session": {
+        "state": {
+          "stage": "NEW"
+        }
+      },
+      "llm_stub": {
+        "action": "reply",
+        "stage": "NEW",
+        "reply": ""
+      },
+      "expected": {
+        "intent": "VIN_HARD_PICK",
+        "action": "handover_operator",
+        "stage": "HARD_PICK",
+        "need_operator": true,
+        "requires_clarification": false
+      }
+    },
+    {
+      "id": "lost_not_actual",
+      "intent_class": "LOST",
+      "msg": {
+        "text": "Не актуально, спасибо"
+      },
+      "session": {
+        "state": {
+          "stage": "CONTACT"
+        }
+      },
+      "llm_stub": {
+        "action": "reply",
+        "stage": "FINAL",
+        "reply": ""
+      },
+      "expected": {
+        "intent": "LOST",
+        "action": "reply",
+        "stage": "LOST",
+        "need_operator": false,
+        "requires_clarification": false
+      }
+    },
+    {
+      "id": "lost_otboi",
+      "intent_class": "LOST",
+      "msg": {
+        "text": "Отбой, уже не нужно"
+      },
+      "session": {
+        "state": {
+          "stage": "NEW"
+        }
+      },
+      "llm_stub": {
+        "action": "reply",
+        "stage": "CONTACT",
+        "reply": "ok"
+      },
+      "expected": {
+        "intent": "LOST",
+        "action": "reply",
+        "stage": "LOST",
+        "need_operator": false,
+        "requires_clarification": false
+      }
+    },
+    {
+      "id": "oem_query_backfill_from_llm_action",
+      "intent_class": "OEM_QUERY",
+      "msg": {
+        "text": "06A906032N"
+      },
+      "session": {
+        "state": {
+          "stage": "NEW"
+        }
+      },
+      "llm_stub": {
+        "action": "abcp_lookup",
+        "stage": "PRICING",
+        "reply": "Ищу варианты",
+        "oems": [
+          "06A906032N"
+        ]
+      },
+      "expected": {
+        "intent": "OEM_QUERY",
+        "action": "abcp_lookup",
+        "stage": "PRICING",
+        "requires_clarification": false
+      }
+    },
+    {
+      "id": "oem_query_short_path_abcp_injected",
+      "intent_class": "OEM_QUERY",
+      "msg": {
+        "text": "06A906032N"
+      },
+      "session": {
+        "state": {
+          "stage": "NEW"
+        }
+      },
+      "injected_abcp": {
+        "06A906032N": {
+          "offers": [
+            {
+              "brand": "VAG",
+              "price": 1200,
+              "minDays": 5,
+              "maxDays": 5
+            }
+          ]
+        }
+      },
+      "forbid_llm": true,
+      "expected": {
+        "intent": "OEM_QUERY",
+        "action": "reply",
+        "stage": "PRICING",
+        "requires_clarification": false,
+        "offers_count": 1,
+        "oems": [
+          "06A906032N"
+        ]
+      }
+    }
+  ]
+}

@@ -185,6 +185,13 @@ test("flows: cortexTwoPassFlow handles first-pass Cortex=null", async () => {
   const session = {
     leadId: null,
     phone: "+79991234567",
+    lastCortexDecision: {
+      pass: "second",
+      intent: "OLD_INTENT",
+      action: "reply",
+      stage: "PRICING",
+      at: Date.now() - 1000,
+    },
     state: {
       stage: "NEW",
       offers: [],
@@ -205,6 +212,8 @@ test("flows: cortexTwoPassFlow handles first-pass Cortex=null", async () => {
   assert.equal(handled, true);
   assert.equal(calls.length, 1);
   assert.match(String(calls[0].params?.MESSAGE || ""), /Сервис временно недоступен/i);
+  assert.equal(session.lastCortexDecision, null);
+  assert.equal(session.lastCortexRoute, "cortex_fallback_first_pass");
 });
 
 test("flows: cortexTwoPassFlow runs single-pass when action is not abcp_lookup", async () => {
@@ -501,6 +510,232 @@ test("flows: cortexTwoPassFlow creates order on FINAL stage", async () => {
   assert.equal(calls.length, 1);
   assert.match(String(calls[0].params?.MESSAGE || ""), /Оформляю заказ/);
   assert.match(String(calls[0].params?.MESSAGE || ""), /A-3003/);
+});
+
+test("flows: cortexTwoPassFlow uses current llm contact/address for TS fallback order", async () => {
+  const prevOrderClearBasket = process.env.ABCP_ORDER_CLEAR_BASKET;
+  const prevTsClientId = process.env.ABCP_TS_CLIENT_ID;
+
+  process.env.HF_CORTEX_ENABLED = "true";
+  process.env.HF_CORTEX_URL = "http://cortex.test/flow";
+  process.env.HF_CORTEX_TIMEOUT_MS = "1000";
+  process.env.ABCP_ORDER_CLEAR_BASKET = "0";
+  delete process.env.ABCP_TS_CLIENT_ID;
+
+  const cpUsersPhoneQueries = [];
+  let tsOrderPayload = {};
+
+  stubAbcpGet = async (url, { params }) => {
+    if (url === "/cp/users") {
+      cpUsersPhoneQueries.push(String(params?.phone || ""));
+      return { data: { items: [{ id: 4321, clientId: 4321 }] } };
+    }
+    if (url === "/ts/agreements/list") return { data: [{ id: 77 }] };
+    if (url === "/ts/deliveryMethod/forCo") return { data: [{ id: 55, type: "courier" }] };
+    return { data: [] };
+  };
+
+  stubAbcpPost = async (url, body) => {
+    if (url === "/basket/add") {
+      return {
+        data: {
+          status: 0,
+          errorCode: 403,
+          errorMessage: "Orders v1 disabled",
+        },
+      };
+    }
+    if (url === "/ts/cart/create") {
+      return { data: { id: 9001 } };
+    }
+    if (url === "/ts/orders/createByCart") {
+      const qs = new URLSearchParams(String(body || ""));
+      tsOrderPayload = Object.fromEntries(qs.entries());
+      return { data: { orders: [{ number: "TS-1001" }] } };
+    }
+    return { data: { status: 1 } };
+  };
+
+  const getFetchCalls = mockFetchWithJsonBodies([
+    {
+      result: {
+        action: "reply",
+        stage: "FINAL",
+        reply: "Оформляю заказ",
+        chosen_offer_id: 11,
+        offers: [
+          {
+            id: 11,
+            brand: "VAG",
+            oem: "06A906032N",
+            price: 1234,
+            quantity: 1,
+            supplierCode: 91,
+            itemKey: "IK-11",
+          },
+        ],
+        contact_update: {
+          phone: "+7 999 000-11-22",
+        },
+        update_lead_fields: {
+          DELIVERY_ADDRESS: "г. Владивосток, ул. Светланская, д. 10",
+        },
+      },
+    },
+  ]);
+
+  const { api, calls } = makeApiSpy();
+  const session = {
+    leadId: null,
+    phone: null,
+    state: {
+      stage: "CONTACT",
+      offers: [],
+    },
+  };
+
+  try {
+    const handled = await runCortexTwoPassFlow({
+      api,
+      portalDomain: "audit-two-pass-ts-fallback.bitrix24.ru",
+      portalCfg: { baseUrl: "http://127.0.0.1:9/rest", accessToken: "token" },
+      dialogId: "chat-two-005e",
+      chatId: "5",
+      text: "подтверждаю, оформляйте",
+      session,
+    });
+
+    assert.equal(handled, true);
+    assert.equal(getFetchCalls(), 1);
+    assert.equal(calls.length, 1);
+    assert.match(String(calls[0].params?.MESSAGE || ""), /TS-1001/);
+    assert.ok(cpUsersPhoneQueries.length > 0);
+    assert.ok(cpUsersPhoneQueries.some((x) => x.replace(/\D/g, "").endsWith("9990001122")));
+    assert.equal(
+      tsOrderPayload["delivery[meetData][address]"],
+      "г. Владивосток, ул. Светланская, д. 10",
+    );
+    assert.equal(tsOrderPayload["delivery[meetData][contact]"], "+7 999 000-11-22");
+  } finally {
+    if (prevOrderClearBasket == null) delete process.env.ABCP_ORDER_CLEAR_BASKET;
+    else process.env.ABCP_ORDER_CLEAR_BASKET = prevOrderClearBasket;
+    if (prevTsClientId == null) delete process.env.ABCP_TS_CLIENT_ID;
+    else process.env.ABCP_TS_CLIENT_ID = prevTsClientId;
+  }
+});
+
+test("flows: cortexTwoPassFlow does not create order for handover_operator even on FINAL", async () => {
+  process.env.HF_CORTEX_ENABLED = "true";
+  process.env.HF_CORTEX_URL = "http://cortex.test/flow";
+  process.env.HF_CORTEX_TIMEOUT_MS = "1000";
+
+  let touchedAbcpOrderApi = false;
+  stubAbcpGet = async (url) => {
+    if (String(url || "").startsWith("/basket/")) touchedAbcpOrderApi = true;
+    return { data: [] };
+  };
+  stubAbcpPost = async () => {
+    touchedAbcpOrderApi = true;
+    return { data: { status: 1 } };
+  };
+
+  const getFetchCalls = mockFetchWithJsonBodies([
+    {
+      result: {
+        action: "handover_operator",
+        stage: "FINAL",
+        need_operator: true,
+        reply: "Передаю менеджеру",
+        chosen_offer_id: 5,
+        offers: [{ id: 5, code: "CODE-5", price: 777 }],
+      },
+    },
+  ]);
+
+  const { api, calls } = makeApiSpy();
+  const session = {
+    leadId: null,
+    phone: "+79991234567",
+    state: {
+      stage: "CONTACT",
+      offers: [],
+      delivery_address: "г. Москва, ул. Тверская, д. 1",
+    },
+  };
+
+  const handled = await runCortexTwoPassFlow({
+    api,
+    portalDomain: "audit-two-pass-no-order-handover.bitrix24.ru",
+    portalCfg: { baseUrl: "http://127.0.0.1:9/rest", accessToken: "token" },
+    dialogId: "chat-two-005c",
+    chatId: "5",
+    text: "не актуально, передайте менеджеру",
+    session,
+  });
+
+  assert.equal(handled, true);
+  assert.equal(getFetchCalls(), 1);
+  assert.equal(touchedAbcpOrderApi, false);
+  assert.equal(calls.length, 1);
+  assert.match(String(calls[0].params?.MESSAGE || ""), /Передаю менеджеру/);
+  assert.doesNotMatch(String(calls[0].params?.MESSAGE || ""), /Заказ в ABCP оформлен/i);
+});
+
+test("flows: cortexTwoPassFlow does not create order on LOST stage", async () => {
+  process.env.HF_CORTEX_ENABLED = "true";
+  process.env.HF_CORTEX_URL = "http://cortex.test/flow";
+  process.env.HF_CORTEX_TIMEOUT_MS = "1000";
+
+  let touchedAbcpOrderApi = false;
+  stubAbcpGet = async (url) => {
+    if (String(url || "").startsWith("/basket/")) touchedAbcpOrderApi = true;
+    return { data: [] };
+  };
+  stubAbcpPost = async () => {
+    touchedAbcpOrderApi = true;
+    return { data: { status: 1 } };
+  };
+
+  const getFetchCalls = mockFetchWithJsonBodies([
+    {
+      result: {
+        action: "reply",
+        stage: "LOST",
+        need_operator: false,
+        reply: "Понял, обращайтесь если потребуется подбор",
+        chosen_offer_id: 5,
+        offers: [{ id: 5, code: "CODE-5", price: 777 }],
+      },
+    },
+  ]);
+
+  const { api, calls } = makeApiSpy();
+  const session = {
+    leadId: null,
+    phone: "+79991234567",
+    state: {
+      stage: "CONTACT",
+      offers: [],
+      delivery_address: "г. Москва, ул. Тверская, д. 1",
+    },
+  };
+
+  const handled = await runCortexTwoPassFlow({
+    api,
+    portalDomain: "audit-two-pass-no-order-lost.bitrix24.ru",
+    portalCfg: { baseUrl: "http://127.0.0.1:9/rest", accessToken: "token" },
+    dialogId: "chat-two-005d",
+    chatId: "5",
+    text: "не нужно",
+    session,
+  });
+
+  assert.equal(handled, true);
+  assert.equal(getFetchCalls(), 1);
+  assert.equal(touchedAbcpOrderApi, false);
+  assert.equal(calls.length, 1);
+  assert.match(String(calls[0].params?.MESSAGE || ""), /обращайтесь/i);
+  assert.doesNotMatch(String(calls[0].params?.MESSAGE || ""), /Заказ в ABCP оформлен/i);
 });
 
 test("flows: cortexTwoPassFlow converts lead to deal after successful ABCP order", async () => {
