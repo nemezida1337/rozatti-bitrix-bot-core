@@ -28,6 +28,15 @@ function toPositiveInt(value, fallback) {
 }
 
 async function resolveCasesFile() {
+  const ciFixture = path.join(
+    ROOT,
+    "src",
+    "tests",
+    "fixtures",
+    "dialog-cases",
+    "high_confidence_cases.ci.json",
+  );
+
   const direct = String(process.env.DIALOG_CASES_FILE || "").trim();
   if (direct) {
     const resolved = path.resolve(process.cwd(), direct);
@@ -47,11 +56,17 @@ async function resolveCasesFile() {
 
   const latestPointer = path.join(ROOT, "data", "tmp", "dialog-tests", "LATEST.txt");
   if (!(await pathExists(latestPointer))) {
-    throw new Error("Не найден LATEST: data/tmp/dialog-tests/LATEST.txt");
+    if (await pathExists(ciFixture)) return ciFixture;
+    throw new Error("Не найден LATEST: data/tmp/dialog-tests/LATEST.txt и нет CI fixture");
   }
   const latestDir = String(await fs.readFile(latestPointer, "utf8")).trim();
+  if (!latestDir) {
+    if (await pathExists(ciFixture)) return ciFixture;
+    throw new Error("Пустой LATEST: data/tmp/dialog-tests/LATEST.txt");
+  }
   const candidate = path.join(path.resolve(latestDir), "high_confidence_cases.json");
   if (!(await pathExists(candidate))) {
+    if (await pathExists(ciFixture)) return ciFixture;
     throw new Error(`high_confidence_cases.json не найден: ${candidate}`);
   }
   return candidate;
@@ -60,6 +75,10 @@ async function resolveCasesFile() {
 function resolveEvalOutDir(casesFile) {
   const explicit = String(process.env.DIALOG_EVAL_OUT_DIR || "").trim();
   if (explicit) return path.resolve(process.cwd(), explicit);
+  const rel = path.relative(ROOT, casesFile).replaceAll("\\", "/");
+  if (!rel.startsWith("..") && rel.startsWith("src/tests/fixtures/")) {
+    return path.join(ROOT, "data", "tmp", "dialog-eval");
+  }
   return path.join(path.dirname(casesFile), "eval");
 }
 
@@ -244,7 +263,8 @@ function buildMarkdownReport(summary, mismatches, reportJsonPath) {
 
 test("dialog action contract replay: merged/high-confidence cases", async () => {
   const casesFile = await resolveCasesFile();
-  const rows = Array.isArray(await readJson(casesFile)) ? await readJson(casesFile) : [];
+  const loaded = await readJson(casesFile);
+  const rows = Array.isArray(loaded) ? loaded : [];
   const maxCases = toPositiveInt(process.env.DIALOG_REPLAY_MAX_CASES, rows.length);
   const checked = rows.slice(0, maxCases);
 
@@ -311,4 +331,3 @@ test("dialog action contract replay: merged/high-confidence cases", async () => 
 
   assert.equal(totalFailed, 0, `Action contract mismatches: ${totalFailed}`);
 });
-
